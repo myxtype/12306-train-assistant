@@ -21,8 +21,9 @@ DEFAULT_COOKIE_FILE = os.path.expanduser("~/.kyfw_12306_cookies.json")
 SM4_KEY = "tiekeyuankp12306"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.3.1 Safari/605.1.15"
 )
+BROWSER_ACCEPT_LANGUAGE = "zh-CN,zh-Hans;q=0.9"
 SEAT_CODE_MAP: dict[str, str] = {
     "business": "9",
     "business_class": "9",
@@ -448,18 +449,33 @@ def assert_ok(resp: dict[str, Any], field: str = "result_code") -> None:
 
 
 class KyfwClient:
-    def __init__(self, base_url: str = BASE_URL, timeout: int = 15, cookie_file: str | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str = BASE_URL,
+        timeout: int = 15,
+        cookie_file: str | None = None,
+        browser_headers: bool = True,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.cookie_file = cookie_file
+        self.browser_headers = browser_headers
         self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "User-Agent": USER_AGENT,
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "X-Requested-With": "XMLHttpRequest",
-            }
-        )
+        session_headers = {
+            "User-Agent": USER_AGENT,
+            "Accept": "*/*",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        if self.browser_headers:
+            session_headers.update(
+                {
+                    "Accept-Language": BROWSER_ACCEPT_LANGUAGE,
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
+                    "If-Modified-Since": "0",
+                }
+            )
+        self.session.headers.update(session_headers)
         self._station_index: dict[str, str] | None = None
         self._load_cookies()
 
@@ -548,6 +564,14 @@ class KyfwClient:
         referer: str | None = None,
     ) -> dict[str, Any]:
         headers: dict[str, str] = {}
+        if self.browser_headers:
+            headers.update(
+                {
+                    "Sec-Fetch-Site": "same-origin",
+                    "Sec-Fetch-Mode": "cors",
+                    "Sec-Fetch-Dest": "empty",
+                }
+            )
         if referer:
             headers["Referer"] = self._url(referer)
         if method.upper() == "POST":
@@ -587,6 +611,14 @@ class KyfwClient:
         referer: str | None = None,
     ) -> str:
         headers: dict[str, str] = {}
+        if self.browser_headers:
+            headers.update(
+                {
+                    "Sec-Fetch-Site": "same-origin",
+                    "Sec-Fetch-Mode": "cors",
+                    "Sec-Fetch-Dest": "empty",
+                }
+            )
         if referer:
             headers["Referer"] = self._url(referer)
         if method.upper() == "POST":
@@ -1346,7 +1378,7 @@ class KyfwClient:
             "Nov",
             "Dec",
         ][date_value.month - 1]
-        return f"{week} {month} {date_value.day:02d} {date_value.year} 00:00:00 GMT+0800 (China Standard Time)"
+        return f"{week} {month} {date_value.day:02d} {date_value.year} 00:00:00 GMT+0800 (中国标准时间)"
 
     @staticmethod
     def _find_train_row(rows: list[dict[str, Any]], train_code: str) -> dict[str, Any]:
@@ -1426,7 +1458,7 @@ class KyfwClient:
                 "_json_att": "",
                 "REPEAT_SUBMIT_TOKEN": repeat_submit_token,
             },
-            referer="/otn/confirmPassenger/initDc",
+            referer="/otn/confirmPassenger/initDc?N",
         )
 
     def query_passengers(self) -> dict[str, Any]:
@@ -1476,6 +1508,14 @@ class KyfwClient:
 
         raise RuntimeError("获取乘车人列表失败。详情: " + " | ".join(errors))
 
+    def check_user(self) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/otn/login/checkUser",
+            data={"_json_att": ""},
+            referer="/otn/leftTicket/init",
+        )
+
     @staticmethod
     def _select_passengers(passenger_resp: dict[str, Any], passenger_names: list[str]) -> list[dict[str, Any]]:
         data = passenger_resp.get("data") if isinstance(passenger_resp, dict) else None
@@ -1519,22 +1559,22 @@ class KyfwClient:
             id_no = str(item.get("passenger_id_no", "")).strip()
             mobile = str(item.get("mobile_no", "")).strip()
             passenger_type = str(item.get("passenger_type") or "1").strip() or "1"
+            all_enc_str = str(item.get("allEncStr") or "").strip()
             if not (name and id_type and id_no):
                 raise RuntimeError(f"乘客信息不完整，无法下单: {item}")
-            ticket_segments.append(
-                ",".join(
-                    [
-                        seat_code,
-                        "0",
-                        passenger_type,
-                        name,
-                        id_type,
-                        id_no,
-                        mobile,
-                        "N",
-                    ]
-                )
-            )
+            passenger_fields = [
+                seat_code,
+                "0",
+                passenger_type,
+                name,
+                id_type,
+                id_no,
+                mobile,
+                "N",
+            ]
+            if all_enc_str:
+                passenger_fields.append(all_enc_str)
+            ticket_segments.append(",".join(passenger_fields))
             old_segments.append(f"{name},{id_type},{id_no},{passenger_type}_")
         return "_".join(ticket_segments), "".join(old_segments)
 
@@ -1554,7 +1594,6 @@ class KyfwClient:
                 "passengerTicketStr": passenger_ticket_str,
                 "oldPassengerStr": old_passenger_str,
                 "tour_flag": "dc",
-                "randCode": "",
                 "whatsSelect": "1",
                 "sessionId": "",
                 "sig": "",
@@ -1562,7 +1601,7 @@ class KyfwClient:
                 "_json_att": "",
                 "REPEAT_SUBMIT_TOKEN": repeat_submit_token,
             },
-            referer="/otn/confirmPassenger/initDc",
+            referer="/otn/confirmPassenger/initDc?N",
         )
 
     def get_queue_count(
@@ -1592,7 +1631,7 @@ class KyfwClient:
                 "_json_att": "",
                 "REPEAT_SUBMIT_TOKEN": repeat_submit_token,
             },
-            referer="/otn/confirmPassenger/initDc",
+            referer="/otn/confirmPassenger/initDc?N",
         )
 
     def confirm_single_for_queue(
@@ -1613,20 +1652,22 @@ class KyfwClient:
             data={
                 "passengerTicketStr": passenger_ticket_str,
                 "oldPassengerStr": old_passenger_str,
-                "randCode": "",
                 "purpose_codes": purpose_codes,
                 "key_check_isChange": key_check_is_change,
                 "leftTicketStr": left_ticket_str,
                 "train_location": train_location,
                 "choose_seats": choose_seats,
                 "seatDetailType": "000",
+                "is_jy": "N",
+                "is_cj": "N",
+                "encryptedData": "",
                 "whatsSelect": "1",
                 "roomType": "00",
                 "dwAll": "N",
                 "_json_att": "",
                 "REPEAT_SUBMIT_TOKEN": repeat_submit_token,
             },
-            referer="/otn/confirmPassenger/initDc",
+            referer="/otn/confirmPassenger/initDc?N",
         )
 
     def query_order_wait_time(self, *, repeat_submit_token: str) -> dict[str, Any]:
@@ -1639,7 +1680,7 @@ class KyfwClient:
                 "_json_att": "",
                 "REPEAT_SUBMIT_TOKEN": repeat_submit_token,
             },
-            referer="/otn/confirmPassenger/initDc",
+            referer="/otn/confirmPassenger/initDc?N",
         )
 
     def wait_for_order_id(
@@ -1673,7 +1714,19 @@ class KyfwClient:
                 "_json_att": "",
                 "REPEAT_SUBMIT_TOKEN": repeat_submit_token,
             },
-            referer="/otn/confirmPassenger/initDc",
+            referer="/otn/confirmPassenger/initDc?N",
+        )
+
+    def report_confirm_log(self, *, repeat_submit_token: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/otn/basedata/log",
+            data={
+                "type": "dc",
+                "_json_att": "",
+                "REPEAT_SUBMIT_TOKEN": repeat_submit_token,
+            },
+            referer="/otn/confirmPassenger/initDc?N",
         )
 
     def book_ticket(
@@ -1708,19 +1761,34 @@ class KyfwClient:
         if not secret_str:
             raise RuntimeError("余票数据中缺少 secret_str，无法提交预订请求。")
 
+        check_user_resp = self.check_user()
+        check_user_data = check_user_resp.get("data") if isinstance(check_user_resp, dict) else None
+        check_user_ok = (
+            str(check_user_resp.get("httpstatus", "200")) == "200"
+            and check_user_resp.get("status") is not False
+            and (not isinstance(check_user_data, dict) or check_user_data.get("flag") is not False)
+        )
+        if not check_user_ok:
+            raise RuntimeError(f"checkUser 失败: {check_user_resp}")
+
+        submit_back_date = dt.date.today().isoformat()
+        submit_from_station_name = str(train_row.get("from_station") or from_station)
+        submit_to_station_name = str(train_row.get("to_station") or to_station)
+        seat_discount_info = str(train_row.get("yp_info") or "")
         submit = self._request(
             "POST",
             "/otn/leftTicket/submitOrderRequest",
             data={
                 "secretStr": unquote(secret_str),
                 "train_date": travel_date.isoformat(),
-                "back_train_date": travel_date.isoformat(),
+                "back_train_date": submit_back_date,
                 "tour_flag": "dc",
                 "purpose_codes": purpose_codes,
-                "query_from_station_name": from_station,
-                "query_to_station_name": to_station,
+                "query_from_station_name": submit_from_station_name,
+                "query_to_station_name": submit_to_station_name,
                 "bed_level_info": "",
-                "seat_discount_info": "",
+                "seat_discount_info": seat_discount_info,
+                "undefined": "",
             },
             referer="/otn/leftTicket/init",
         )
@@ -1761,6 +1829,7 @@ class KyfwClient:
                 "seat_code": seat_code,
                 "train": train_row,
                 "selected_passengers": [p.get("passenger_name") for p in selected],
+                "checkUser": check_user_resp,
                 "submitOrderRequest": submit,
                 "checkOrderInfo": check_order,
                 "getQueueCount": queue_count,
@@ -1781,6 +1850,10 @@ class KyfwClient:
             raise RuntimeError(f"confirmSingleForQueue 失败: {confirm}")
         if isinstance(confirm_data, dict) and confirm_data.get("submitStatus") is False:
             raise RuntimeError(f"confirmSingleForQueue 未通过: {confirm}")
+        try:
+            confirm_log = self.report_confirm_log(repeat_submit_token=repeat_submit_token)
+        except Exception as e:  # noqa: BLE001
+            confirm_log = {"warning": f"basedata/log 失败（不影响下单流程）: {e}"}
 
         wait_info = self.wait_for_order_id(
             repeat_submit_token=repeat_submit_token,
@@ -1803,10 +1876,12 @@ class KyfwClient:
             "seat_code": seat_code,
             "train": train_row,
             "selected_passengers": [p.get("passenger_name") for p in selected],
+            "checkUser": check_user_resp,
             "submitOrderRequest": submit,
             "checkOrderInfo": check_order,
             "getQueueCount": queue_count,
             "confirmSingleForQueue": confirm,
+            "basedataLog": confirm_log,
             "queryOrderWaitTime": wait_info["raw"],
             "resultOrderForDcQueue": result_order,
         }
@@ -1978,6 +2053,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_COOKIE_FILE,
         help=f"Cookie 持久化文件路径（默认 {DEFAULT_COOKIE_FILE}）",
     )
+    parser.add_argument(
+        "--no-browser-headers",
+        action="store_true",
+        help="关闭浏览器风格请求头仿真（默认开启）",
+    )
     parser.add_argument("--json", action="store_true", help="输出 JSON")
 
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2090,7 +2170,12 @@ def ensure_logged_in(client: KyfwClient, args: argparse.Namespace) -> None:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    client = KyfwClient(base_url=args.base_url, timeout=args.timeout, cookie_file=args.cookie_file)
+    client = KyfwClient(
+        base_url=args.base_url,
+        timeout=args.timeout,
+        cookie_file=args.cookie_file,
+        browser_headers=not args.no_browser_headers,
+    )
 
     try:
         if args.command == "login":
