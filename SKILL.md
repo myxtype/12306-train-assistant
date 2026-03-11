@@ -1,7 +1,7 @@
 ---
 name: 12306-train-assistant
-description: 12306 查询与订票辅助技能，支持余票查询、经停站查询、中转换乘、候补查询、登录状态检查、下单与支付链接获取；当用户提到火车票、高铁票、经停站、中转、候补或 12306 查票时触发。
-version: 0.2.0
+description: 12306 查询与订票辅助技能，支持余票查询、经停站查询、中转换乘、候补查询与提交/取消、登录状态检查、下单与支付链接获取；当用户提到火车票、高铁票、经停站、中转、候补或 12306 查票时触发。
+version: 0.3.0
 icon: 🚄
 ---
 
@@ -15,8 +15,8 @@ icon: 🚄
 - 中转换乘：`transfer-ticket`
 - 经停站：`route`（支持 `--train-code` 自动解析）
 - 登录态检查：`status`
-- 候补查询：`candidate-queue` / `candidate-orders`
-- 需要登录的操作：`passengers` / `orders` / `book`
+- 候补管理：`candidate-queue` / `candidate-orders` / `candidate-submit` / `candidate-cancel`
+- 需要登录的操作：`passengers` / `orders` / `book` / `candidate-submit` / `candidate-cancel`
 - 支付参数获取：`payOrder/init` + `payOrder/paycheckNew`（由 `book` 自动触发）
 
 ## 触发信号
@@ -105,6 +105,12 @@ python3 client.py candidate-orders
 
 # 候补订单（已处理）
 python3 client.py candidate-orders --processed --start-date 2026-03-11 --end-date 2026-04-09 --limit 20
+
+# 提交候补（建议目标席别余票为“无”时）
+python3 client.py candidate-submit --date 2026-03-23 --from 北京南 --to 上海虹桥 --train-code G101 --seat second_class
+
+# 取消候补
+python3 client.py candidate-cancel --reserve-no <候补单号>
 ```
 
 ## 每个命令参数说明
@@ -129,6 +135,7 @@ python3 client.py candidate-orders --processed --start-date 2026-03-11 --end-dat
 | `--purpose` | 否 | `ADULT` | 乘客类型 |
 | `--endpoint` | 否 | `queryG` | 余票接口类型，`queryG` 或 `queryZ` |
 | `--limit` | 否 | `20` | 文本输出时最多展示行数 |
+| `--with-price` | 否 | 关闭 | 附带票价查询（会增加请求次数） |
 
 ### `transfer-ticket` 中转换乘
 
@@ -217,6 +224,33 @@ python3 client.py candidate-orders --processed --start-date 2026-03-11 --end-dat
 | `--start-date` | 否 | 今天 | 查询起始日期，`YYYY-MM-DD` |
 | `--end-date` | 否 | 起始日期+29天 | 查询结束日期，`YYYY-MM-DD` |
 | `--limit` | 否 | `20` | 文本输出最多展示条数 |
+| `--username` | 否 | 无 | cookie 失效时用于自动补登录 |
+| `--password` | 否 | 交互输入或 `KYFW_PASSWORD` | 自动补登录时使用 |
+| `--id-last4` | 否 | 无 | 自动补登录短信场景 |
+| `--sms-code` | 否 | 无 | 自动补登录短信场景 |
+
+### `candidate-submit` 提交候补订单
+
+| 参数 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `--date` | 是 | 无 | 出发日期，`YYYY-MM-DD` |
+| `--from` | 是 | 无 | 出发站 |
+| `--to` | 是 | 无 | 到达站 |
+| `--train-code` | 是 | 无 | 目标车次（如 `G101`） |
+| `--seat` | 是 | 无 | 席别（如 `second_class` / `O` / `一等座`） |
+| `--purpose` | 否 | `ADULT` | 乘客类型 |
+| `--endpoint` | 否 | `queryG` | 余票接口类型 |
+| `--force` | 否 | 关闭 | 即使余票不是“无”也尝试提交候补 |
+| `--username` | 否 | 无 | cookie 失效时用于自动补登录 |
+| `--password` | 否 | 交互输入或 `KYFW_PASSWORD` | 自动补登录时使用 |
+| `--id-last4` | 否 | 无 | 自动补登录短信场景 |
+| `--sms-code` | 否 | 无 | 自动补登录短信场景 |
+
+### `candidate-cancel` 取消候补订单
+
+| 参数 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `--reserve-no` | 是 | 无 | 候补单号（reserve_no） |
 | `--username` | 否 | 无 | cookie 失效时用于自动补登录 |
 | `--password` | 否 | 交互输入或 `KYFW_PASSWORD` | 自动补登录时使用 |
 | `--id-last4` | 否 | 无 | 自动补登录短信场景 |

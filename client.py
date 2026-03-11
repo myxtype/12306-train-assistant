@@ -85,6 +85,19 @@ PRICE_KEY_LABEL_MAP: dict[str, str] = {
     "W": "无座",
     "WZ": "无座",
 }
+CANDIDATE_SEAT_CONFIG: dict[str, dict[str, str]] = {
+    "9": {"row_field": "business", "prefix": "SWZ", "hb_seat_code": "9", "label": "商务座"},
+    "P": {"row_field": "special_class", "prefix": "TZ", "hb_seat_code": "P", "label": "特等座"},
+    "D": {"row_field": "premium_first_class", "prefix": "GG", "hb_seat_code": "D", "label": "优选一等座"},
+    "M": {"row_field": "first_class", "prefix": "ZY", "hb_seat_code": "M", "label": "一等座"},
+    "O": {"row_field": "second_class", "prefix": "ZE", "hb_seat_code": "O", "label": "二等座"},
+    "6": {"row_field": "deluxe_soft_sleeper", "prefix": "GR", "hb_seat_code": "6", "label": "高级软卧"},
+    "4": {"row_field": "soft_sleeper", "prefix": "RW", "hb_seat_code": "4", "label": "软卧"},
+    "F": {"row_field": "dynamic_sleeper", "prefix": "SRRB", "hb_seat_code": "F", "label": "动卧"},
+    "3": {"row_field": "hard_sleeper", "prefix": "YW", "hb_seat_code": "3", "label": "硬卧"},
+    "2": {"row_field": "soft_seat", "prefix": "RZ", "hb_seat_code": "2", "label": "软座"},
+    "1": {"row_field": "hard_seat", "prefix": "YZ", "hb_seat_code": "1", "label": "硬座"},
+}
 
 FK = [0xA3B1BAC6, 0x56AA3350, 0x677D9197, 0xB27022DC]
 CK = [
@@ -1021,6 +1034,168 @@ class KyfwClient:
             "raw": data,
         }
 
+    @staticmethod
+    def _extract_error_message(resp: dict[str, Any]) -> str:
+        if not isinstance(resp, dict):
+            return str(resp)
+        data = resp.get("data") if isinstance(resp.get("data"), dict) else {}
+        for key in ("msg", "errMsg", "message", "result_message"):
+            value = data.get(key)
+            if value:
+                return str(value)
+        messages = resp.get("messages")
+        if isinstance(messages, list) and messages:
+            return str(messages[0])
+        result_message = resp.get("result_message")
+        if result_message:
+            return str(result_message)
+        return str(resp)
+
+    def submit_candidate_order(
+        self,
+        *,
+        train_date: str,
+        from_station: str,
+        to_station: str,
+        train_code: str,
+        seat: str,
+        purpose_codes: str = "ADULT",
+        endpoint: str = "queryG",
+        force: bool = False,
+    ) -> dict[str, Any]:
+        seat_code = self.resolve_seat_code(seat)
+        seat_cfg = CANDIDATE_SEAT_CONFIG.get(seat_code)
+        if seat_cfg is None:
+            supported = ", ".join(sorted(CANDIDATE_SEAT_CONFIG.keys()))
+            raise RuntimeError(
+                f"席别 {seat}({seat_code}) 暂不支持候补提交。"
+                f"当前支持席别代码: {supported}"
+            )
+
+        left_ticket = self.query_left_ticket(
+            train_date=train_date,
+            from_station=from_station,
+            to_station=to_station,
+            purpose_codes=purpose_codes,
+            endpoint=endpoint,
+        )
+        train_row = self._find_train_row(left_ticket.get("rows", []), train_code)
+        seat_value = str(train_row.get(seat_cfg["row_field"], "--") or "--").strip() or "--"
+        if seat_value != "无" and not force:
+            raise RuntimeError(
+                f"当前车次 {train_code} 的 {seat_cfg['label']} 余票为 {seat_value}，"
+                "默认仅在余票为“无”时提交候补。若需强制尝试可加 --force。"
+            )
+        if str(train_row.get("houbu_train_flag") or "").strip() != "1":
+            raise RuntimeError(
+                f"车次 {train_code} 当前不支持该席别候补（houbu_train_flag={train_row.get('houbu_train_flag')}）。"
+            )
+        secret_str = str(train_row.get("secret_str") or "").strip()
+        if not secret_str:
+            raise RuntimeError("余票数据中缺少 secret_str，无法提交候补。")
+
+        check_user_resp = self.check_user()
+        check_user_data = check_user_resp.get("data") if isinstance(check_user_resp, dict) else None
+        if (
+            str(check_user_resp.get("httpstatus", "200")) != "200"
+            or check_user_resp.get("status") is False
+            or (isinstance(check_user_data, dict) and check_user_data.get("flag") is False)
+        ):
+            raise RuntimeError(f"checkUser 失败: {check_user_resp}")
+
+        secret_list = f"{secret_str}#{seat_cfg['hb_seat_code']}|"
+        submit = self._request(
+            "POST",
+            "/otn/afterNate/submitOrderRequest",
+            data={"secretList": secret_list},
+            referer="/otn/leftTicket/init",
+        )
+
+        data = submit.get("data") if isinstance(submit, dict) else None
+        if isinstance(data, dict) and data.get("flag"):
+            return {
+                "step": "submitted",
+                "train": train_row,
+                "seat_code": seat_code,
+                "seat_name": seat_cfg["label"],
+                "seat_status": seat_value,
+                "secret_list": secret_list,
+                "checkUser": check_user_resp,
+                "submitOrderRequest": submit,
+                "next_url": self._url("/otn/view/lineUp_toPay.html"),
+            }
+
+        if isinstance(data, dict) and data.get("faceCheck"):
+            return {
+                "step": "face_check_required",
+                "train": train_row,
+                "seat_code": seat_code,
+                "seat_name": seat_cfg["label"],
+                "seat_status": seat_value,
+                "secret_list": secret_list,
+                "checkUser": check_user_resp,
+                "submitOrderRequest": submit,
+                "face_check_code": data.get("faceCheck"),
+                "is_show_qrcode": data.get("is_show_qrcode"),
+            }
+
+        raise RuntimeError(f"提交候补失败: {self._extract_error_message(submit)}")
+
+    def cancel_candidate_order(self, *, reserve_no: str) -> dict[str, Any]:
+        reserve_no = reserve_no.strip()
+        if not reserve_no:
+            raise ValueError("--reserve-no 不能为空")
+
+        self.session.get(self._url("/otn/view/lineUp_order.html"), timeout=self.timeout)
+        check_resp = self._request(
+            "POST",
+            "/otn/afterNateOrder/reserveReturnCheck",
+            data={"sequence_no": reserve_no},
+            referer="/otn/view/lineUp_order.html",
+        )
+        check_data = check_resp.get("data") if isinstance(check_resp, dict) else None
+        can_reserve_return = isinstance(check_data, dict) and bool(check_data.get("flag"))
+        out: dict[str, Any] = {
+            "reserve_no": reserve_no,
+            "reserveReturnCheck": check_resp,
+        }
+
+        if can_reserve_return:
+            reserve_return_resp = self._request(
+                "POST",
+                "/otn/afterNateOrder/reserveReturn",
+                data={"sequence_no": reserve_no},
+                referer="/otn/view/lineUp_order.html",
+            )
+            out["reserveReturn"] = reserve_return_resp
+            reserve_return_data = (
+                reserve_return_resp.get("data") if isinstance(reserve_return_resp, dict) else None
+            )
+            if isinstance(reserve_return_data, dict) and reserve_return_data.get("flag"):
+                out["step"] = "cancelled"
+                out["method"] = "reserveReturn"
+                return out
+
+        cancel_not_complete_resp = self._request(
+            "POST",
+            "/otn/afterNateOrder/cancelNotComplete",
+            data={"reserve_no": reserve_no},
+            referer="/otn/view/lineUp_payConfirm.html",
+        )
+        out["cancelNotComplete"] = cancel_not_complete_resp
+        cancel_not_complete_data = (
+            cancel_not_complete_resp.get("data") if isinstance(cancel_not_complete_resp, dict) else None
+        )
+        if isinstance(cancel_not_complete_data, dict) and cancel_not_complete_data.get("flag"):
+            out["step"] = "cancelled"
+            out["method"] = "cancelNotComplete"
+            return out
+
+        raise RuntimeError(
+            "取消候补订单失败: "
+            f"{self._extract_error_message(cancel_not_complete_resp)}"
+        )
+
     def _load_station_index(self) -> dict[str, str]:
         if self._station_index is not None:
             return self._station_index
@@ -1108,6 +1283,7 @@ class KyfwClient:
                 continue
             item = {
                 "secret_str": parts[0],
+                "button_text_info": parts[1] if len(parts) > 1 else "",
                 "train_no": parts[2],
                 "train_code": parts[3],
                 "from_station_code": parts[6],
@@ -1123,19 +1299,26 @@ class KyfwClient:
                 "location_code": parts[15],
                 "from_station_no": parts[16],
                 "to_station_no": parts[17],
+                "controlled_train_flag": parts[19] if len(parts) > 19 else "",
                 "premium_first_class": self._seat(parts, 20),
                 "deluxe_soft_sleeper": self._seat(parts, 21),
+                "other": self._seat(parts, 22),
                 "business": self._seat(parts, 32),
                 "special_class": self._seat(parts, 25),
                 "first_class": self._seat(parts, 31),
                 "second_class": self._seat(parts, 30),
                 "second_class_compartment": self._seat(parts, 27),
                 "soft_sleeper": self._seat(parts, 23),
+                "dynamic_sleeper": self._seat(parts, 33),
                 "hard_sleeper": self._seat(parts, 28),
                 "soft_seat": self._seat(parts, 24),
                 "hard_seat": self._seat(parts, 29),
                 "no_seat": self._seat(parts, 26),
+                "yp_ex": parts[34] if len(parts) > 34 else "",
                 "seat_types": parts[35] if len(parts) > 35 else "",
+                "houbu_train_flag": parts[37] if len(parts) > 37 else "",
+                "houbu_seat_limit": parts[38] if len(parts) > 38 else "",
+                "yp_info_new": parts[39] if len(parts) > 39 else "",
             }
             if with_price and row_idx < max(0, price_max_rows):
                 train_no = str(item.get("train_no") or "")
@@ -2317,6 +2500,30 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_orders_p.add_argument("--end-date", help="查询结束日期 YYYY-MM-DD（默认起始日期+29天）")
     candidate_orders_p.add_argument("--limit", type=int, default=20, help="最多展示多少条候补订单")
 
+    candidate_submit_p = sub.add_parser("candidate-submit", help="提交候补订单")
+    add_auth_args(candidate_submit_p, require_username=False, allow_send_sms=False)
+    candidate_submit_p.add_argument("--date", required=True, help="出发日期 YYYY-MM-DD")
+    candidate_submit_p.add_argument("--from", dest="from_station", required=True, help="出发站（中文名/拼音/三字码）")
+    candidate_submit_p.add_argument("--to", dest="to_station", required=True, help="到达站（中文名/拼音/三字码）")
+    candidate_submit_p.add_argument("--train-code", required=True, help="车次，例如 G1234")
+    candidate_submit_p.add_argument("--seat", required=True, help="席别，例如 second_class / O / 一等座")
+    candidate_submit_p.add_argument("--purpose", default="ADULT", help="乘客类型，默认 ADULT")
+    candidate_submit_p.add_argument(
+        "--endpoint",
+        default="queryG",
+        choices=["queryG", "queryZ"],
+        help="余票接口类型",
+    )
+    candidate_submit_p.add_argument(
+        "--force",
+        action="store_true",
+        help="即使该席别余票不是“无”也尝试提交候补",
+    )
+
+    candidate_cancel_p = sub.add_parser("candidate-cancel", help="取消候补订单")
+    add_auth_args(candidate_cancel_p, require_username=False, allow_send_sms=False)
+    candidate_cancel_p.add_argument("--reserve-no", required=True, help="候补单号（reserve_no）")
+
     left_p = sub.add_parser("left-ticket", help="查询车次余票")
     left_p.add_argument("--date", required=True, help="出发日期 YYYY-MM-DD")
     left_p.add_argument("--from", dest="from_station", required=True, help="出发站（中文名/拼音/三字码）")
@@ -2517,6 +2724,50 @@ def main() -> int:
                     f"{q['start_date']} -> {q['end_date']}"
                 )
                 print_candidate_orders(result["rows"], args.limit)
+            return 0
+
+        if args.command == "candidate-submit":
+            ensure_logged_in(client, args)
+            result = client.submit_candidate_order(
+                train_date=args.date,
+                from_station=args.from_station,
+                to_station=args.to_station,
+                train_code=args.train_code,
+                seat=args.seat,
+                purpose_codes=args.purpose,
+                endpoint=args.endpoint,
+                force=args.force,
+            )
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                step = result.get("step")
+                if step == "submitted":
+                    print("候补提交成功。")
+                    print("车次:", result.get("train", {}).get("train_code"))
+                    print("席别:", result.get("seat_name"), f"({result.get('seat_code')})")
+                    print("提交前余票:", result.get("seat_status"))
+                    print("下一步页面:", result.get("next_url"))
+                    print("可用 candidate-orders / candidate-queue 查看状态。")
+                elif step == "face_check_required":
+                    print("候补提交触发身份核验。")
+                    print("车次:", result.get("train", {}).get("train_code"))
+                    print("席别:", result.get("seat_name"), f"({result.get('seat_code')})")
+                    print("提交前余票:", result.get("seat_status"))
+                    print("face_check_code:", result.get("face_check_code"))
+                    print("is_show_qrcode:", result.get("is_show_qrcode"))
+                    print("请先在 12306 App 完成人证核验后重试。")
+            return 0
+
+        if args.command == "candidate-cancel":
+            ensure_logged_in(client, args)
+            result = client.cancel_candidate_order(reserve_no=args.reserve_no)
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                print("候补订单取消成功。")
+                print("候补单号:", result.get("reserve_no"))
+                print("取消方式:", result.get("method"))
             return 0
 
         if args.command == "left-ticket":

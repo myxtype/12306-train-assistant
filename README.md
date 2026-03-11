@@ -11,6 +11,8 @@
 - 查询订单
 - 查询候补排队状态
 - 查询候补订单（进行中/已处理）
+- 提交候补订单（基于“无票可候补”规则）
+- 取消候补订单（按候补单号）
 - 订票（提交订单并轮询订单号）
 - 支付信息获取（尝试生成支付链接）
 
@@ -37,6 +39,7 @@ python3 client.py book -h
 python3 client.py transfer-ticket -h
 python3 client.py route -h
 python3 client.py candidate-orders -h
+python3 client.py candidate-submit -h
 ```
 
 ## 常用命令
@@ -89,6 +92,7 @@ python3 client.py left-ticket --date 2026-03-23 --from 宁波 --to 宜春
 - `--endpoint queryG|queryZ`（默认 `queryG`）
 - `--purpose ADULT`（默认 `ADULT`）
 - `--limit`（控制展示行数）
+- `--with-price`（附带查询票价，会增加请求次数）
 
 ### 4) 查询中转车票
 
@@ -157,7 +161,7 @@ python3 client.py orders --where G
 
 若 cookie 未登录，可额外提供 `--username`（及必要时的登录参数）自动补登录。
 
-### 8) 候补相关查询
+### 8) 候补相关（查询 / 提交 / 取消）
 
 候补排队状态：
 
@@ -177,12 +181,32 @@ python3 client.py candidate-orders
 python3 client.py candidate-orders --processed --start-date 2026-03-11 --end-date 2026-04-09
 ```
 
+提交候补订单（建议在目标席别余票显示“无”时使用）：
+
+```bash
+python3 client.py candidate-submit \
+  --date 2026-03-23 \
+  --from 宁波 \
+  --to 宜春 \
+  --train-code G1234 \
+  --seat second_class
+```
+
+取消候补订单：
+
+```bash
+python3 client.py candidate-cancel --reserve-no <候补单号>
+```
+
 可选参数：
 
 - `candidate-orders --processed`（查已处理记录，不加则查进行中）
 - `candidate-orders --page-no`（页码，默认 `0`）
 - `candidate-orders --start-date/--end-date`（日期区间）
 - `candidate-orders --limit`（文本输出最多展示条数）
+- `candidate-submit --seat`（候补席别；默认要求该席别余票为“无”）
+- `candidate-submit --force`（即使余票不是“无”也尝试提交）
+- `candidate-cancel --reserve-no`（候补单号）
 
 说明：
 
