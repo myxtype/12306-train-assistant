@@ -1416,8 +1416,6 @@ class KyfwClient:
         to_station: str,
         purpose_codes: str = "ADULT",
         endpoint: str = "queryG",
-        with_price: bool = False,
-        price_max_rows: int = 20,
     ) -> dict[str, Any]:
         dt.date.fromisoformat(train_date)
         from_code = self.station_to_code(from_station)
@@ -1441,7 +1439,7 @@ class KyfwClient:
         code_map = payload.get("map", {})
         rows = payload.get("result", [])
         parsed: list[dict[str, Any]] = []
-        for row_idx, row in enumerate(rows):
+        for row in rows:
             parts = row.split("|")
             if len(parts) < 33:
                 continue
@@ -1484,11 +1482,12 @@ class KyfwClient:
                 "houbu_seat_limit": parts[38] if len(parts) > 38 else "",
                 "yp_info_new": parts[39] if len(parts) > 39 else "",
             }
-            if with_price and row_idx < max(0, price_max_rows):
-                price_data = self._parse_ticket_price_from_yp_info_new(str(item.get("yp_info_new") or ""))
-                if price_data:
-                    item["ticket_price"] = price_data
-                    item["ticket_price_text"] = self._format_ticket_price(price_data)
+            price_data = self._parse_ticket_price_from_yp_info(
+                str(item.get("yp_info_new") or item.get("yp_info") or "")
+            )
+            if price_data:
+                item["ticket_price"] = price_data
+                item["ticket_price_text"] = self._format_ticket_price(price_data)
             parsed.append(item)
         return {
             "query": {
@@ -1499,7 +1498,6 @@ class KyfwClient:
                 "to_code": to_code,
                 "endpoint": endpoint,
                 "purpose_codes": purpose_codes,
-                "with_price": with_price,
             },
             "rows": parsed,
             "raw": data,
@@ -1545,8 +1543,8 @@ class KyfwClient:
         return ", ".join(pairs)
 
     @staticmethod
-    def _parse_ticket_price_from_yp_info_new(yp_info_new: str) -> dict[str, str]:
-        text = str(yp_info_new or "").strip()
+    def _parse_ticket_price_from_yp_info(yp_info: str) -> dict[str, str]:
+        text = str(yp_info or "").strip()
         if not text:
             return {}
         seat_codes = sorted(
@@ -1664,6 +1662,8 @@ class KyfwClient:
                 second_leg = legs[1] if len(legs) > 1 else {}
                 first_leg_seats = self._extract_transfer_leg_seats(first_leg)
                 second_leg_seats = self._extract_transfer_leg_seats(second_leg)
+                first_leg_price = self._parse_ticket_price_from_yp_info(str(first_leg.get("yp_info") or ""))
+                second_leg_price = self._parse_ticket_price_from_yp_info(str(second_leg.get("yp_info") or ""))
                 row_item = {
                     "from_station": item.get("from_station_name"),
                     "to_station": item.get("end_station_name"),
@@ -1685,6 +1685,8 @@ class KyfwClient:
                     "first_leg_first_class": first_leg.get("zy_num", "--"),
                     "first_leg_seats": first_leg_seats,
                     "first_leg_seat_text": self._format_transfer_leg_seats(first_leg_seats),
+                    "first_leg_ticket_price": first_leg_price,
+                    "first_leg_ticket_price_text": self._format_ticket_price(first_leg_price) if first_leg_price else "",
                     "second_leg_train_code": second_leg.get("station_train_code"),
                     "second_leg_start_time": second_leg.get("start_time"),
                     "second_leg_arrive_time": second_leg.get("arrive_time"),
@@ -1692,6 +1694,8 @@ class KyfwClient:
                     "second_leg_first_class": second_leg.get("zy_num", "--"),
                     "second_leg_seats": second_leg_seats,
                     "second_leg_seat_text": self._format_transfer_leg_seats(second_leg_seats),
+                    "second_leg_ticket_price": second_leg_price,
+                    "second_leg_ticket_price_text": self._format_ticket_price(second_leg_price) if second_leg_price else "",
                 }
                 parsed.append(row_item)
 
@@ -2613,7 +2617,13 @@ def print_transfer_tickets(rows: list[dict[str, Any]], limit: int) -> None:
             f"     第一程坐席: {item.get('first_leg_seat_text') or '--'}"
         )
         print(
+            f"     第一程票价: {item.get('first_leg_ticket_price_text') or '--'}"
+        )
+        print(
             f"     第二程坐席: {item.get('second_leg_seat_text') or '--'}"
+        )
+        print(
+            f"     第二程票价: {item.get('second_leg_ticket_price_text') or '--'}"
         )
 
 
@@ -2803,7 +2813,6 @@ def build_parser() -> argparse.ArgumentParser:
     left_p.add_argument("--purpose", default="ADULT", help="乘客类型，默认 ADULT")
     left_p.add_argument("--endpoint", default="queryG", choices=["queryG", "queryZ"], help="余票接口类型")
     left_p.add_argument("--limit", type=int, default=20, help="最多展示多少行")
-    left_p.add_argument("--with-price", action="store_true", help="从余票数据解析票价（不额外请求）")
 
     transfer_p = sub.add_parser("transfer-ticket", help="查询中转车票")
     transfer_p.add_argument("--date", required=True, help="出发日期 YYYY-MM-DD")
@@ -3165,8 +3174,6 @@ def main() -> int:
                 to_station=args.to_station,
                 purpose_codes=args.purpose,
                 endpoint=args.endpoint,
-                with_price=args.with_price,
-                price_max_rows=max(0, args.limit),
             )
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, indent=2))

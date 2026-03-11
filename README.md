@@ -112,7 +112,10 @@ python3 client.py left-ticket --date 2026-03-23 --from 宁波 --to 宜春
 - `--endpoint queryG|queryZ`（默认 `queryG`）
 - `--purpose ADULT`（默认 `ADULT`）
 - `--limit`（控制展示行数）
-- `--with-price`（从余票数据解析票价，不额外请求票价接口）
+
+说明：
+
+- 单程余票默认展示票价，票价由返回的余票数据本地解析，不额外请求票价接口。
 
 ### 4) 查询中转车票
 
@@ -130,6 +133,10 @@ python3 client.py transfer-ticket --date 2026-03-23 --from 南部 --to 成都东
 - `--channel`（默认 `E`）
 - `--endpoint queryG|queryZ`（默认 `queryG`）
 - `--limit`（控制展示行数）
+
+说明：
+
+- 中转结果默认展示两程坐席与票价，票价由每程返回的 `yp_info` 本地解析，不额外请求票价接口。
 
 JSON 输出：
 
