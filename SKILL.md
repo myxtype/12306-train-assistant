@@ -1,6 +1,6 @@
 ---
 name: 12306-train-assistant
-description: 12306 查询与订票辅助技能，支持余票查询、经停站查询、中转换乘、登录状态检查及下单流程；当用户提到火车票、高铁票、经停站、中转或 12306 查票时触发。
+description: 12306 查询与订票辅助技能，支持余票查询、经停站查询、中转换乘、候补查询、登录状态检查及下单流程；当用户提到火车票、高铁票、经停站、中转、候补或 12306 查票时触发。
 version: 0.1.0
 icon: 🚄
 ---
@@ -15,6 +15,7 @@ icon: 🚄
 - 中转换乘：`transfer-ticket`
 - 经停站：`route`（支持 `--train-code` 自动解析）
 - 登录态检查：`status`
+- 候补查询：`candidate-queue` / `candidate-orders`
 - 需要登录的操作：`passengers` / `orders` / `book`
 
 ## 触发信号
@@ -24,6 +25,7 @@ icon: 🚄
 - “查明天北京到上海余票”
 - “G1033 经停站”
 - “深圳到拉萨怎么中转”
+- “候补排队状态怎么样”
 - “12306 登录状态”
 
 ## 执行原则
@@ -85,6 +87,19 @@ python3 client.py book --date 2026-03-23 --from 北京南 --to 上海虹桥 --tr
 
 # 正式提交
 python3 client.py book --date 2026-03-23 --from 北京南 --to 上海虹桥 --train-code G101 --seat second_class --passengers 张三
+```
+
+### 示例 7：候补查询
+
+```bash
+# 候补排队状态
+python3 client.py candidate-queue
+
+# 候补订单（进行中）
+python3 client.py candidate-orders
+
+# 候补订单（已处理）
+python3 client.py candidate-orders --processed --start-date 2026-03-11 --end-date 2026-04-09 --limit 20
 ```
 
 ## 每个命令参数说明
@@ -178,6 +193,29 @@ python3 client.py book --date 2026-03-23 --from 北京南 --to 上海虹桥 --tr
 | `--id-last4` | 否 | 无 | 自动补登录短信场景 |
 | `--sms-code` | 否 | 无 | 自动补登录短信场景 |
 
+### `candidate-queue` 候补排队状态
+
+| 参数 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `--username` | 否 | 无 | cookie 失效时用于自动补登录 |
+| `--password` | 否 | 交互输入或 `KYFW_PASSWORD` | 自动补登录时使用 |
+| `--id-last4` | 否 | 无 | 自动补登录短信场景 |
+| `--sms-code` | 否 | 无 | 自动补登录短信场景 |
+
+### `candidate-orders` 候补订单查询
+
+| 参数 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `--processed` | 否 | 关闭 | 查询已处理候补订单；默认查询进行中 |
+| `--page-no` | 否 | `0` | 页码 |
+| `--start-date` | 否 | 今天 | 查询起始日期，`YYYY-MM-DD` |
+| `--end-date` | 否 | 起始日期+29天 | 查询结束日期，`YYYY-MM-DD` |
+| `--limit` | 否 | `20` | 文本输出最多展示条数 |
+| `--username` | 否 | 无 | cookie 失效时用于自动补登录 |
+| `--password` | 否 | 交互输入或 `KYFW_PASSWORD` | 自动补登录时使用 |
+| `--id-last4` | 否 | 无 | 自动补登录短信场景 |
+| `--sms-code` | 否 | 无 | 自动补登录短信场景 |
+
 ### `book` 订票
 
 | 参数 | 必填 | 默认值 | 说明 |
@@ -240,6 +278,14 @@ python3 client.py route --train-code C956 --date <日期> --from <出发站> --t
 
 ```bash
 python3 client.py transfer-ticket --date <日期> --from 深圳 --to 拉萨 --limit 10
+```
+
+### 示例 D：候补
+
+用户：“帮我看看候补订单有没有兑现”
+
+```bash
+python3 client.py candidate-orders --processed --start-date <起始日期> --end-date <结束日期> --limit 20
 ```
 
 ## 限制与注意
