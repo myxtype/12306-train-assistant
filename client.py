@@ -3205,7 +3205,7 @@ def main() -> int:
                 q = result["query"]
                 print(
                     f"查询条件: {q['date']} {q['from_station']}({q['from_code']}) -> "
-                    f"{q['to_station']}({q['to_code']}) | 指定换乘站={q['middle_station'] or '任意'} "
+                    f"{q['to_station']}({q['to_code']}) | middle={q['middle_station'] or '任意'} "
                     f"| endpoint={q['endpoint']}"
                 )
                 meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
