@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import unquote, urlencode
 
 import requests
 
@@ -463,7 +463,7 @@ class KyfwClient:
         self.session = requests.Session()
         session_headers = {
             "User-Agent": USER_AGENT,
-            "Accept": "*/*",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
             "X-Requested-With": "XMLHttpRequest",
         }
         if self.browser_headers:
@@ -1717,6 +1717,84 @@ class KyfwClient:
             referer="/otn/confirmPassenger/initDc?N",
         )
 
+    def init_pay_order(self) -> str:
+        random_value = str(int(time.time() * 1000))
+        self._request_text(
+            "GET",
+            "/otn/payOrder/init",
+            params={"random": random_value},
+            referer="/otn/confirmPassenger/initDc?N",
+        )
+        return random_value
+
+    def pay_check_new(self, *, init_random: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/otn/payOrder/paycheckNew",
+            data={
+                "batch_nos": "",
+                "coach_nos": "",
+                "seat_nos": "",
+                "passenger_id_types": "",
+                "passenger_id_nos": "",
+                "passenger_names": "",
+                "allEncStr": "",
+                "insure_price": "0",
+                "insure_types": "",
+                "if_buy_insure_only": "N",
+                "ins_selected_time": "",
+                "ins_clause_time": "",
+                "ins_notice_time": "",
+                "hasBoughtIns": "",
+                "ins_id": "1103_PLANA_30",
+                "reserver_id_type": "",
+                "reserver_id_no": "",
+                "reserver_name": "",
+                "inschild": "",
+                "_json_att": "",
+            },
+            referer=f"/otn/payOrder/init?random={init_random}",
+        )
+
+    @staticmethod
+    def _build_payment_result(pay_check_new_resp: dict[str, Any]) -> dict[str, Any]:
+        data = pay_check_new_resp.get("data") if isinstance(pay_check_new_resp, dict) else None
+        pay_form = data.get("payForm") if isinstance(data, dict) else None
+        if not isinstance(pay_form, dict):
+            raise RuntimeError(f"paycheckNew 返回结构异常: {pay_check_new_resp}")
+
+        epayurl = str(pay_form.get("epayurl") or "").strip()
+        if not epayurl:
+            raise RuntimeError(f"paycheckNew 返回缺少 epayurl: {pay_check_new_resp}")
+
+        pay_query_fields = (
+            "payOrderId",
+            "interfaceName",
+            "interfaceVersion",
+            "tranData",
+            "merSignMsg",
+            "appId",
+            "transType",
+        )
+        pay_params: dict[str, str] = {}
+        for key in pay_query_fields:
+            value = pay_form.get(key)
+            if value is None:
+                continue
+            text = str(value)
+            if text:
+                pay_params[key] = text
+        pay_url = epayurl
+        if pay_params:
+            pay_url = f"{epayurl}?{urlencode(pay_params)}"
+        return {
+            "pay_url": pay_url,
+            "epayurl": epayurl,
+            "pay_params": pay_params,
+            "pay_form": pay_form,
+            "paycheckNew": pay_check_new_resp,
+        }
+
     def report_confirm_log(self, *, repeat_submit_token: str) -> dict[str, Any]:
         return self._request(
             "POST",
@@ -1870,6 +1948,21 @@ class KyfwClient:
             raise RuntimeError(f"resultOrderForDcQueue 失败: {result_order}")
         if isinstance(result_data, dict) and result_data.get("submitStatus") is False:
             raise RuntimeError(f"resultOrderForDcQueue 未通过: {result_order}")
+
+        payment: dict[str, Any]
+        try:
+            init_random = self.init_pay_order()
+            pay_check_new_resp = self.pay_check_new(init_random=init_random)
+            if str(pay_check_new_resp.get("httpstatus", "200")) != "200" or pay_check_new_resp.get("status") is False:
+                raise RuntimeError(f"paycheckNew 失败: {pay_check_new_resp}")
+            pay_data = pay_check_new_resp.get("data") if isinstance(pay_check_new_resp, dict) else None
+            if isinstance(pay_data, dict) and pay_data.get("flag") is False:
+                raise RuntimeError(f"paycheckNew 返回 flag=false: {pay_check_new_resp}")
+            payment = self._build_payment_result(pay_check_new_resp)
+            payment["init_random"] = init_random
+        except Exception as e:  # noqa: BLE001
+            payment = {"warning": f"支付链接生成失败（订单已成功，可在12306待支付订单中继续支付）: {e}"}
+
         return {
             "step": "ordered",
             "order_id": order_id,
@@ -1884,6 +1977,7 @@ class KyfwClient:
             "basedataLog": confirm_log,
             "queryOrderWaitTime": wait_info["raw"],
             "resultOrderForDcQueue": result_order,
+            "payment": payment,
         }
 
 
@@ -2404,6 +2498,14 @@ def main() -> int:
                     print("车次:", result.get("train", {}).get("train_code"))
                     print("席别代码:", result.get("seat_code"))
                     print("乘客:", ", ".join(result.get("selected_passengers", [])))
+                    payment = result.get("payment") if isinstance(result, dict) else None
+                    if isinstance(payment, dict):
+                        pay_url = payment.get("pay_url")
+                        warning = payment.get("warning")
+                        if pay_url:
+                            print("支付链接:", pay_url)
+                        elif warning:
+                            print(warning)
             return 0
 
         parser.print_help()
