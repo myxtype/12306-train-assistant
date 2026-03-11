@@ -88,6 +88,21 @@ PRICE_KEY_LABEL_MAP: dict[str, str] = {
     "W": "无座",
     "WZ": "无座",
 }
+TRANSFER_SEAT_FIELD_LABELS: list[tuple[str, str]] = [
+    ("swz_num", "商务座"),
+    ("tz_num", "特等座"),
+    ("gg_num", "优选一等座"),
+    ("zy_num", "一等座"),
+    ("ze_num", "二等座"),
+    ("gr_num", "高级软卧"),
+    ("rw_num", "软卧"),
+    ("srrb_num", "动卧"),
+    ("yw_num", "硬卧"),
+    ("rz_num", "软座"),
+    ("yz_num", "硬座"),
+    ("wz_num", "无座"),
+    ("qt_num", "其他"),
+]
 CANDIDATE_SEAT_CONFIG: dict[str, dict[str, str]] = {
     "9": {"row_field": "business", "prefix": "SWZ", "hb_seat_code": "9", "label": "商务座"},
     "P": {"row_field": "special_class", "prefix": "TZ", "hb_seat_code": "P", "label": "特等座"},
@@ -1544,6 +1559,22 @@ class KyfwClient:
             pairs.append(f"{label}={text}")
         return ", ".join(pairs)
 
+    @staticmethod
+    def _extract_transfer_leg_seats(leg: dict[str, Any]) -> dict[str, str]:
+        seats: dict[str, str] = {}
+        for field, label in TRANSFER_SEAT_FIELD_LABELS:
+            value = str(leg.get(field, "--") or "--").strip() or "--"
+            if value == "--":
+                continue
+            seats[label] = value
+        return seats
+
+    @staticmethod
+    def _format_transfer_leg_seats(seats: dict[str, str]) -> str:
+        if not seats:
+            return "--"
+        return ", ".join(f"{label}={value}" for label, value in seats.items())
+
     def query_transfer_ticket(
         self,
         *,
@@ -1604,33 +1635,38 @@ class KyfwClient:
                 legs = [leg for leg in full if isinstance(leg, dict)] if isinstance(full, list) else []
                 first_leg = legs[0] if len(legs) > 0 else {}
                 second_leg = legs[1] if len(legs) > 1 else {}
-                parsed.append(
-                    {
-                        "from_station": item.get("from_station_name"),
-                        "to_station": item.get("end_station_name"),
-                        "start_time": item.get("start_time"),
-                        "arrive_time": item.get("arrive_time"),
-                        "total_duration": item.get("all_lishi"),
-                        "total_duration_minutes": item.get("all_lishi_minutes"),
-                        "wait_time": item.get("wait_time"),
-                        "wait_time_minutes": item.get("wait_time_minutes"),
-                        "middle_station": item.get("middle_station_name"),
-                        "middle_station_code": item.get("middle_station_code"),
-                        "same_train": item.get("same_train"),
-                        "score": item.get("score"),
-                        "score_str": item.get("score_str"),
-                        "first_leg_train_code": first_leg.get("station_train_code"),
-                        "first_leg_start_time": first_leg.get("start_time"),
-                        "first_leg_arrive_time": first_leg.get("arrive_time"),
-                        "first_leg_second_class": first_leg.get("ze_num", "--"),
-                        "first_leg_first_class": first_leg.get("zy_num", "--"),
-                        "second_leg_train_code": second_leg.get("station_train_code"),
-                        "second_leg_start_time": second_leg.get("start_time"),
-                        "second_leg_arrive_time": second_leg.get("arrive_time"),
-                        "second_leg_second_class": second_leg.get("ze_num", "--"),
-                        "second_leg_first_class": second_leg.get("zy_num", "--"),
-                    }
-                )
+                first_leg_seats = self._extract_transfer_leg_seats(first_leg)
+                second_leg_seats = self._extract_transfer_leg_seats(second_leg)
+                row_item = {
+                    "from_station": item.get("from_station_name"),
+                    "to_station": item.get("end_station_name"),
+                    "start_time": item.get("start_time"),
+                    "arrive_time": item.get("arrive_time"),
+                    "total_duration": item.get("all_lishi"),
+                    "total_duration_minutes": item.get("all_lishi_minutes"),
+                    "wait_time": item.get("wait_time"),
+                    "wait_time_minutes": item.get("wait_time_minutes"),
+                    "middle_station": item.get("middle_station_name"),
+                    "middle_station_code": item.get("middle_station_code"),
+                    "same_train": item.get("same_train"),
+                    "score": item.get("score"),
+                    "score_str": item.get("score_str"),
+                    "first_leg_train_code": first_leg.get("station_train_code"),
+                    "first_leg_start_time": first_leg.get("start_time"),
+                    "first_leg_arrive_time": first_leg.get("arrive_time"),
+                    "first_leg_second_class": first_leg.get("ze_num", "--"),
+                    "first_leg_first_class": first_leg.get("zy_num", "--"),
+                    "first_leg_seats": first_leg_seats,
+                    "first_leg_seat_text": self._format_transfer_leg_seats(first_leg_seats),
+                    "second_leg_train_code": second_leg.get("station_train_code"),
+                    "second_leg_start_time": second_leg.get("start_time"),
+                    "second_leg_arrive_time": second_leg.get("arrive_time"),
+                    "second_leg_second_class": second_leg.get("ze_num", "--"),
+                    "second_leg_first_class": second_leg.get("zy_num", "--"),
+                    "second_leg_seats": second_leg_seats,
+                    "second_leg_seat_text": self._format_transfer_leg_seats(second_leg_seats),
+                }
+                parsed.append(row_item)
 
         return {
             "query": {
@@ -2546,6 +2582,12 @@ def print_transfer_tickets(rows: list[dict[str, Any]], limit: int) -> None:
         print(
             f"{idx:<4} {middle_station:<8} {train_pair:<24} {time_pair:<13} {total_duration:<8} {wait_time:<8}"
         )
+        print(
+            f"     第一程坐席: {item.get('first_leg_seat_text') or '--'}"
+        )
+        print(
+            f"     第二程坐席: {item.get('second_leg_seat_text') or '--'}"
+        )
 
 
 def print_route(rows: list[dict[str, Any]], limit: int) -> None:
@@ -3129,7 +3171,7 @@ def main() -> int:
                 q = result["query"]
                 print(
                     f"查询条件: {q['date']} {q['from_station']}({q['from_code']}) -> "
-                    f"{q['to_station']}({q['to_code']}) | middle={q['middle_station'] or '任意'} "
+                    f"{q['to_station']}({q['to_code']}) | 指定换乘站={q['middle_station'] or '任意'} "
                     f"| endpoint={q['endpoint']}"
                 )
                 meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
