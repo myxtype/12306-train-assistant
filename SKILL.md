@@ -1,7 +1,7 @@
 ---
 name: 12306-train-assistant
 description: 12306 查询与订票辅助技能，支持余票查询、经停站查询、中转换乘、候补查询与提交/取消、登录状态检查、密码登录与二维码登录（异步生成/检查）、下单与支付链接获取；当用户提到火车票、高铁票、经停站、中转、候补或 12306 查票时触发。
-version: 0.5.0
+version: 0.6.0
 icon: 🚄
 ---
 
@@ -13,12 +13,12 @@ icon: 🚄
 
 - 余票查询：`left-ticket`
 - 中转换乘：`transfer-ticket`
+- 中转下单：`transfer-book`
 - 经停站：`route`（支持 `--train-code` 自动解析）
 - 登录态检查：`status`
 - 二维码登录：`qr-login-create` / `qr-login-check`
 - 候补管理：`candidate-queue` / `candidate-orders` / `candidate-submit` / `candidate-cancel`
-- 需要登录的操作：`passengers` / `orders` / `book` / `candidate-submit` / `candidate-cancel`
-- 支付参数获取：`payOrder/init` + `payOrder/paycheckNew`（由 `book` 自动触发）
+- 需要登录的操作：`passengers` / `orders` / `book` / `transfer-book` / `candidate-submit` / `candidate-cancel`
 
 ## 触发信号
 
@@ -27,6 +27,7 @@ icon: 🚄
 - “查明天北京到上海余票”
 - “G1033 经停站”
 - “深圳到拉萨怎么中转”
+- “把第1个中转方案下单”
 - “候补排队状态怎么样”
 - “12306 登录状态”
 
@@ -53,6 +54,16 @@ python3 client.py left-ticket --date 2026-03-23 --from 北京 --to 上海 --limi
 ```bash
 python3 client.py transfer-ticket --date 2026-03-23 --from 深圳 --to 拉萨 --limit 10
 python3 client.py transfer-ticket --date 2026-03-23 --from 深圳 --to 拉萨 --middle 西安 --json
+```
+
+### 示例 2.1：中转下单
+
+```bash
+# 先预检（不最终提交）
+python3 client.py transfer-book --date 2026-03-23 --from 成都 --to 广安 --plan-index 1 --seat second_class --passengers 张三 --dry-run
+
+# 正式提交
+python3 client.py transfer-book --date 2026-03-23 --from 成都 --to 广安 --plan-index 1 --seat second_class --passengers 张三
 ```
 
 ### 示例 3：经停站
@@ -122,10 +133,7 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 
 | 参数 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `--base-url` | 否 | `https://kyfw.12306.cn` | 12306 服务地址 |
 | `--timeout` | 否 | `15` | 请求超时时间（秒） |
-| `--cookie-file` | 否 | `~/.kyfw_12306_cookies.json` | cookie 持久化文件 |
-| `--no-browser-headers` | 否 | 关闭 | 关闭浏览器风格请求头仿真（默认开启） |
 | `--json` | 否 | 关闭 | 以 JSON 输出结果 |
 
 ### `left-ticket` 余票查询
@@ -154,6 +162,31 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 | `--channel` | 否 | `E` | 中转接口渠道参数 |
 | `--endpoint` | 否 | `queryG` | 中转接口类型，`queryG` 或 `queryZ` |
 | `--limit` | 否 | `20` | 文本输出时最多展示方案数 |
+
+### `transfer-book` 提交中转订单
+
+| 参数 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `--date` | 是 | 无 | 出发日期，`YYYY-MM-DD` |
+| `--from` | 是 | 无 | 出发站 |
+| `--to` | 是 | 无 | 到达站 |
+| `--middle` | 否 | 空 | 指定换乘站，不传则自动推荐 |
+| `--plan-index` | 否 | `1` | 选择第几个中转方案（从 1 开始） |
+| `--result-index` | 否 | `0` | 中转查询分页游标 |
+| `--can-query` | 否 | `Y` | 是否继续查询更多方案（`Y/N`） |
+| `--show-wz` | 否 | 关闭 | 显示无座方案 |
+| `--seat` | 是 | 无 | 席别（如 `second_class` / `O` / `一等座`） |
+| `--passengers` | 是 | 无 | 乘客姓名，多个用逗号分隔 |
+| `--purpose` | 否 | `00` | 中转乘客类型编码 |
+| `--channel` | 否 | `E` | 中转接口渠道参数 |
+| `--endpoint` | 否 | `queryG` | 中转接口类型（`queryG/queryZ`） |
+| `--max-wait-seconds` | 否 | `30` | 排队轮询最长等待秒数 |
+| `--poll-interval` | 否 | `1.5` | 排队轮询间隔（秒） |
+| `--dry-run` | 否 | 关闭 | 只检查不提交最终确认 |
+| `--username` | 否 | 无 | cookie 失效时用于自动补登录 |
+| `--password` | 否 | 交互输入或 `KYFW_PASSWORD` | 自动补登录时使用 |
+| `--id-last4` | 否 | 无 | 自动补登录短信场景 |
+| `--sms-code` | 否 | 无 | 自动补登录短信场景 |
 
 ### `route` 经停站查询
 
@@ -307,6 +340,7 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 - 默认输出文本结果并概括关键信息。
 - 若用户说“返回 JSON / 机器可读”，添加 `--json` 并返回结构化摘要。
 - `book` 成功时应突出 `order_id`；若返回 `payment.pay_url`，一并给出支付链接。
+- `transfer-book` 成功时应突出 `order_id` 与方案序号（`plan_index`）。
 - 当前 CLI 没有内置 `csv` 输出，不要承诺 CSV。
 
 ## 示例工作流
@@ -335,6 +369,14 @@ python3 client.py route --train-code C956 --date <日期> --from <出发站> --t
 
 ```bash
 python3 client.py transfer-ticket --date <日期> --from 深圳 --to 拉萨 --limit 10
+```
+
+### 示例 C.1：中转下单
+
+用户：“把第1个中转方案给我下单，二等座，乘客张三”
+
+```bash
+python3 client.py transfer-book --date <日期> --from <出发站> --to <到达站> --plan-index 1 --seat second_class --passengers 张三
 ```
 
 ### 示例 D：候补

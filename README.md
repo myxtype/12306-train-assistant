@@ -8,6 +8,7 @@
 - 查询当前账号乘车人信息
 - 查询余票
 - 查询中转车票
+- 提交中转订单（按中转方案下单）
 - 查询经停站
 - 查询订单
 - 查询候补排队状态
@@ -38,6 +39,7 @@ pip install requests
 python3 client.py -h
 python3 client.py book -h
 python3 client.py transfer-ticket -h
+python3 client.py transfer-book -h
 python3 client.py route -h
 python3 client.py candidate-orders -h
 python3 client.py candidate-submit -h
@@ -284,6 +286,39 @@ python3 client.py book \
 - 英文：`second_class`、`first_class`、`business`
 - 中文：`二等座`、`一等座`、`硬卧` 等
 - 代码：`O`、`M`、`9`、`3`、`4`、`1` 等
+
+### 10) 提交中转订单
+
+先建议用 `--dry-run` 做预检（不提交最终排队确认）：
+
+```bash
+python3 client.py transfer-book \
+  --date 2026-03-23 \
+  --from 南部 \
+  --to 广安 \
+  --plan-index 1 \
+  --seat second_class \
+  --passengers 张三 \
+  --dry-run
+```
+
+确认后正式提交：
+
+```bash
+python3 client.py transfer-book \
+  --date 2026-03-23 \
+  --from 南部 \
+  --to 广安 \
+  --plan-index 1 \
+  --seat second_class \
+  --passengers 张三
+```
+
+说明：
+
+- `--plan-index` 对应 `transfer-ticket` 文本结果中的方案序号（从 1 开始）。
+- 中转下单链路基于 `lcQuery/lcConfirmPassenger`，按两程统一席别提交。
+- 当前实现会轮询 `queryOrderWaitTime(tourFlag=lc)` 直到拿到订单号或返回失败信息。
 
 ## 全局参数
 

@@ -1936,7 +1936,12 @@ class KyfwClient:
             "purpose_codes": purpose_codes,
         }
 
-    def get_passenger_dtos(self, repeat_submit_token: str) -> dict[str, Any]:
+    def get_passenger_dtos(
+        self,
+        repeat_submit_token: str,
+        *,
+        referer: str = "/otn/confirmPassenger/initDc?N",
+    ) -> dict[str, Any]:
         return self._request(
             "POST",
             "/otn/confirmPassenger/getPassengerDTOs",
@@ -1944,7 +1949,7 @@ class KyfwClient:
                 "_json_att": "",
                 "REPEAT_SUBMIT_TOKEN": repeat_submit_token,
             },
-            referer="/otn/confirmPassenger/initDc?N",
+            referer=referer,
         )
 
     def query_passengers(self) -> dict[str, Any]:
@@ -2193,17 +2198,23 @@ class KyfwClient:
             referer="/otn/confirmPassenger/initDc?N",
         )
 
-    def query_order_wait_time(self, *, repeat_submit_token: str) -> dict[str, Any]:
+    def query_order_wait_time(
+        self,
+        *,
+        repeat_submit_token: str,
+        tour_flag: str = "dc",
+        referer: str = "/otn/confirmPassenger/initDc?N",
+    ) -> dict[str, Any]:
         return self._request(
             "GET",
             "/otn/confirmPassenger/queryOrderWaitTime",
             params={
                 "random": str(int(time.time() * 1000)),
-                "tourFlag": "dc",
+                "tourFlag": tour_flag,
                 "_json_att": "",
                 "REPEAT_SUBMIT_TOKEN": repeat_submit_token,
             },
-            referer="/otn/confirmPassenger/initDc?N",
+            referer=referer,
         )
 
     def wait_for_order_id(
@@ -2212,16 +2223,25 @@ class KyfwClient:
         repeat_submit_token: str,
         max_wait_seconds: int = 30,
         poll_interval: float = 1.5,
+        tour_flag: str = "dc",
+        referer: str = "/otn/confirmPassenger/initDc?N",
     ) -> dict[str, Any]:
         started = time.time()
         while True:
-            resp = self.query_order_wait_time(repeat_submit_token=repeat_submit_token)
+            resp = self.query_order_wait_time(
+                repeat_submit_token=repeat_submit_token,
+                tour_flag=tour_flag,
+                referer=referer,
+            )
             if str(resp.get("httpstatus", "200")) != "200" or resp.get("status") is False:
                 raise RuntimeError(f"轮询排队状态失败: {resp}")
             data = resp.get("data") if isinstance(resp, dict) else None
             order_id = None
             if isinstance(data, dict):
                 order_id = data.get("orderId") or data.get("order_id")
+                wait_error = str(data.get("msg") or "").strip()
+                if wait_error:
+                    raise RuntimeError(f"排队失败: {wait_error}")
             if order_id:
                 return {"order_id": str(order_id), "wait_time": data.get("waitTime"), "raw": resp}
             if time.time() - started >= max_wait_seconds:
@@ -2318,17 +2338,424 @@ class KyfwClient:
             "paycheckNew": pay_check_new_resp,
         }
 
-    def report_confirm_log(self, *, repeat_submit_token: str) -> dict[str, Any]:
+    def report_confirm_log(
+        self,
+        *,
+        repeat_submit_token: str,
+        log_type: str = "dc",
+        referer: str = "/otn/confirmPassenger/initDc?N",
+    ) -> dict[str, Any]:
         return self._request(
             "POST",
             "/otn/basedata/log",
             data={
-                "type": "dc",
+                "type": log_type,
                 "_json_att": "",
                 "REPEAT_SUBMIT_TOKEN": repeat_submit_token,
             },
-            referer="/otn/confirmPassenger/initDc?N",
+            referer=referer,
         )
+
+    def submit_lc_order_request(
+        self,
+        *,
+        secret_str: str,
+        from_station_name: str,
+        to_station_name: str,
+        purpose_codes: str = "ADULT",
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/otn/lcQuery/submitOrderRequest",
+            data={
+                "secretStr": unquote(secret_str),
+                "train_date": "undefined",
+                "back_train_date": "undefined",
+                "tour_flag": "lc",
+                "purpose_codes": purpose_codes,
+                "query_from_station_name": from_station_name,
+                "query_to_station_name": to_station_name,
+            },
+            referer="/otn/lcQuery/init",
+        )
+
+    def init_lc_context(self) -> dict[str, str]:
+        html = self._request_text(
+            "POST",
+            "/otn/lcConfirmPassenger/initLc",
+            data={"_json_att": ""},
+            referer="/otn/lcQuery/init",
+        )
+        token = ""
+        for pattern in [
+            r"globalRepeatSubmitToken\s*=\s*'([^']+)'",
+            r'globalRepeatSubmitToken\s*=\s*"([^"]+)"',
+            r"globalRepeatSubmitToken\s*=\s*([^;\s]+)",
+        ]:
+            matched = re.search(pattern, html, re.S)
+            if matched and matched.group(1):
+                token = matched.group(1).strip().strip("'\"")
+                break
+        if not token:
+            raise RuntimeError("initLc 页面中未找到 globalRepeatSubmitToken。")
+
+        key_check = ""
+        for pattern in [
+            r"'key_check_isChange'\s*:\s*'([^']+)'",
+            r'"key_check_isChange"\s*:\s*"([^"]+)"',
+            r"key_check_isChange\s*=\s*'([^']+)'",
+            r"key_check_isChange\s*=\s*([^;\s]+)",
+        ]:
+            matched = re.search(pattern, html, re.S)
+            if matched and matched.group(1):
+                key_check = matched.group(1).strip().strip("'\"")
+                break
+        if not key_check:
+            raise RuntimeError("initLc 页面中未找到 key_check_isChange。")
+
+        purpose_codes = "00"
+        for pattern in [
+            r"'purpose_codes'\s*:\s*'([^']+)'",
+            r'"purpose_codes"\s*:\s*"([^"]+)"',
+            r"purpose_codes\s*=\s*'([^']+)'",
+        ]:
+            matched = re.search(pattern, html, re.S)
+            if matched and matched.group(1):
+                purpose_codes = matched.group(1)
+                break
+        if token.strip().lower() == "null":
+            raise RuntimeError("initLc 返回的 globalRepeatSubmitToken 为空，请先确认 submitOrderRequest 是否成功。")
+        if key_check.strip().lower() == "null":
+            raise RuntimeError("initLc 返回的 key_check_isChange 为空，无法继续提交中转订单。")
+        return {
+            "repeat_submit_token": token,
+            "key_check_is_change": key_check,
+            "purpose_codes": purpose_codes,
+        }
+
+    def check_lc_order_info(
+        self,
+        *,
+        repeat_submit_token: str,
+        passenger_ticket_str: str,
+        old_passenger_str: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/otn/lcConfirmPassenger/checkOrderInfo",
+            data={
+                "cancel_flag": "2",
+                "bed_level_order_num": "000000000000000000000000000000",
+                "passengerTicketStr": passenger_ticket_str,
+                "oldPassengerStr": old_passenger_str,
+                "tour_flag": "lc",
+                "sessionId": "",
+                "sig": "",
+                "scene": "nc_login",
+                "_json_att": "",
+                "REPEAT_SUBMIT_TOKEN": repeat_submit_token,
+            },
+            referer="/otn/lcConfirmPassenger/initLc",
+        )
+
+    def get_lc_queue_count(self, *, repeat_submit_token: str, data_str: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/otn/lcConfirmPassenger/getQueueCount",
+            data={
+                "dataStr": data_str,
+                "_json_att": "",
+                "REPEAT_SUBMIT_TOKEN": repeat_submit_token,
+            },
+            referer="/otn/lcConfirmPassenger/initLc",
+        )
+
+    def confirm_lc_for_queue(
+        self,
+        *,
+        repeat_submit_token: str,
+        passenger_ticket_str: str,
+        old_passenger_str: str,
+        purpose_codes: str,
+        key_check_is_change: str,
+        left_ticket_str: str,
+        train_location: str,
+        choose_seats: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/otn/lcConfirmPassenger/confirmLCForQueue",
+            data={
+                "passengerTicketStr": passenger_ticket_str,
+                "oldPassengerStr": old_passenger_str,
+                "purpose_codes": purpose_codes,
+                "key_check_isChange": key_check_is_change,
+                "leftTicketStr": left_ticket_str,
+                "train_location": train_location,
+                "choose_seats": choose_seats,
+                "is_jy": "N",
+                "is_cj": "N",
+                "encryptedData": "",
+                "seatDetailType": choose_seats,
+                "roomType": "00",
+                "_json_att": "",
+                "REPEAT_SUBMIT_TOKEN": repeat_submit_token,
+            },
+            referer="/otn/lcConfirmPassenger/initLc",
+        )
+
+    @staticmethod
+    def _decode_lc_secret_legs(scretstr: str) -> list[dict[str, str]]:
+        encoded = unquote(str(scretstr or "").strip())
+        if not encoded:
+            raise RuntimeError("中转方案缺少 scretstr，无法提交中转订单。")
+        padding = "=" * (-len(encoded) % 4)
+        decoded = base64.b64decode(encoded + padding).decode("utf-8", "ignore")
+        legs: list[dict[str, str]] = []
+        for chunk in decoded.split("#:::"):
+            fields = chunk.split("#")
+            if len(fields) < 15:
+                continue
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", fields[0]):
+                continue
+            train_no = str(fields[5] or "").strip()
+            if not train_no:
+                continue
+            legs.append(
+                {
+                    "train_date": fields[0].replace("-", ""),
+                    "train_code": str(fields[2] or "").strip(),
+                    "train_no": train_no,
+                    "from_station_code": str(fields[6] or "").strip(),
+                    "to_station_code": str(fields[7] or "").strip(),
+                    "from_station_name": str(fields[9] or "").strip(),
+                    "to_station_name": str(fields[10] or "").strip(),
+                    "left_ticket_str": str(fields[13] or "").strip(),
+                    "train_location": str(fields[14] or "").strip(),
+                }
+            )
+        if not legs:
+            raise RuntimeError("无法从中转 scretstr 中解析到有效车段信息。")
+        return legs
+
+    @staticmethod
+    def _seat_label_from_code(seat_code: str) -> str:
+        normalized = "A9" if seat_code == "9" else seat_code
+        return PRICE_KEY_LABEL_MAP.get(normalized, normalized)
+
+    @staticmethod
+    def _build_lc_old_passenger_str(legs: list[dict[str, str]], *, seat_code: str, seat_name: str) -> str:
+        return "".join(
+            f"{leg['train_code']},{seat_code},{seat_name},{leg['train_date']},"
+            f"{leg['from_station_code']},{leg['to_station_code']}#"
+            for leg in legs
+        )
+
+    @staticmethod
+    def _build_lc_queue_data_str(
+        legs: list[dict[str, str]],
+        *,
+        seat_code: str,
+        seat_name: str,
+        purpose_codes: str,
+    ) -> str:
+        segments = []
+        for leg in legs:
+            segments.append(
+                "|".join(
+                    [
+                        leg["train_date"],
+                        leg["train_no"],
+                        leg["train_code"],
+                        seat_code,
+                        leg["from_station_code"],
+                        leg["to_station_code"],
+                        leg["left_ticket_str"],
+                        purpose_codes,
+                        seat_name,
+                        leg["train_location"],
+                    ]
+                )
+            )
+        return "#".join(segments)
+
+    @staticmethod
+    def _build_lc_choose_seats(legs: list[dict[str, str]]) -> str:
+        return "".join(f"{leg['train_code']}_*#" for leg in legs)
+
+    def book_transfer_ticket(
+        self,
+        *,
+        train_date: str,
+        from_station: str,
+        to_station: str,
+        seat: str,
+        passenger_names: list[str],
+        middle_station: str = "",
+        result_index: int = 0,
+        can_query: str = "Y",
+        is_show_wz: str = "N",
+        purpose_codes: str = "00",
+        channel: str = "E",
+        endpoint: str = "queryG",
+        plan_index: int = 1,
+        max_wait_seconds: int = 30,
+        poll_interval: float = 1.5,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        dt.date.fromisoformat(train_date)
+        if plan_index < 1:
+            raise ValueError("--plan-index 必须 >= 1")
+        seat_code = self.resolve_seat_code(seat)
+        seat_name = self._seat_label_from_code(seat_code)
+
+        transfer = self.query_transfer_ticket(
+            train_date=train_date,
+            from_station=from_station,
+            to_station=to_station,
+            middle_station=middle_station,
+            result_index=result_index,
+            can_query=can_query,
+            is_show_wz=is_show_wz,
+            purpose_codes=purpose_codes,
+            channel=channel,
+            endpoint=endpoint,
+        )
+        raw_data = transfer.get("raw", {}).get("data") if isinstance(transfer.get("raw"), dict) else None
+        middle_list = raw_data.get("middleList") if isinstance(raw_data, dict) else None
+        raw_rows = [item for item in middle_list if isinstance(item, dict)] if isinstance(middle_list, list) else []
+        if not raw_rows:
+            raise RuntimeError("未找到可提交的中转方案。")
+        selected_idx = plan_index - 1
+        if selected_idx >= len(raw_rows):
+            raise RuntimeError(f"--plan-index={plan_index} 超出范围，当前仅有 {len(raw_rows)} 个方案。")
+        selected_raw = raw_rows[selected_idx]
+        selected_row = transfer.get("rows", [])[selected_idx] if selected_idx < len(transfer.get("rows", [])) else {}
+        scretstr = str(selected_raw.get("scretstr") or selected_raw.get("secretStr") or "").strip()
+        legs = self._decode_lc_secret_legs(scretstr)
+        old_passenger_str = self._build_lc_old_passenger_str(legs, seat_code=seat_code, seat_name=seat_name)
+        queue_data_str = self._build_lc_queue_data_str(
+            legs,
+            seat_code=seat_code,
+            seat_name=seat_name,
+            purpose_codes=purpose_codes,
+        )
+        choose_seats = self._build_lc_choose_seats(legs)
+
+        check_user_resp = self.check_user()
+        check_user_data = check_user_resp.get("data") if isinstance(check_user_resp, dict) else None
+        check_user_ok = (
+            str(check_user_resp.get("httpstatus", "200")) == "200"
+            and check_user_resp.get("status") is not False
+            and (not isinstance(check_user_data, dict) or check_user_data.get("flag") is not False)
+        )
+        if not check_user_ok:
+            raise RuntimeError(f"checkUser 失败: {check_user_resp}")
+
+        submit = self.submit_lc_order_request(
+            secret_str=scretstr,
+            from_station_name=str(selected_raw.get("from_station_name") or from_station),
+            to_station_name=str(selected_raw.get("end_station_name") or to_station),
+            purpose_codes="ADULT",
+        )
+        if str(submit.get("httpstatus", "200")) != "200" or submit.get("status") is False:
+            raise RuntimeError(f"lc submitOrderRequest 失败: {submit}")
+
+        init_context = self.init_lc_context()
+        repeat_submit_token = init_context["repeat_submit_token"]
+        passengers_resp = self.get_passenger_dtos(
+            repeat_submit_token,
+            referer="/otn/lcConfirmPassenger/initLc",
+        )
+        selected = self._select_passengers(passengers_resp, passenger_names)
+        passenger_ticket_str, _ = self._build_passenger_payload(selected, "")
+
+        check_order = self.check_lc_order_info(
+            repeat_submit_token=repeat_submit_token,
+            passenger_ticket_str=passenger_ticket_str,
+            old_passenger_str=old_passenger_str,
+        )
+        check_data = check_order.get("data") if isinstance(check_order, dict) else None
+        if str(check_order.get("httpstatus", "200")) != "200" or check_order.get("status") is False:
+            raise RuntimeError(f"lc checkOrderInfo 失败: {check_order}")
+        if isinstance(check_data, dict) and check_data.get("submitStatus") is False:
+            raise RuntimeError(f"lc checkOrderInfo 未通过: {check_order}")
+
+        queue_count = self.get_lc_queue_count(
+            repeat_submit_token=repeat_submit_token,
+            data_str=queue_data_str,
+        )
+        if str(queue_count.get("httpstatus", "200")) != "200" or queue_count.get("status") is False:
+            raise RuntimeError(f"lc getQueueCount 失败: {queue_count}")
+        if dry_run:
+            return {
+                "step": "checked",
+                "plan_index": plan_index,
+                "seat_code": seat_code,
+                "seat_name": seat_name,
+                "legs": legs,
+                "plan": selected_row,
+                "selected_passengers": [p.get("passenger_name") for p in selected],
+                "checkUser": check_user_resp,
+                "submitOrderRequest": submit,
+                "initLcContext": init_context,
+                "checkOrderInfo": check_order,
+                "getQueueCount": queue_count,
+                "lc_data_str": queue_data_str,
+                "lc_old_passenger_str": old_passenger_str,
+                "lc_choose_seats": choose_seats,
+            }
+
+        confirm = self.confirm_lc_for_queue(
+            repeat_submit_token=repeat_submit_token,
+            passenger_ticket_str=passenger_ticket_str,
+            old_passenger_str=old_passenger_str,
+            purpose_codes=init_context.get("purpose_codes") or purpose_codes,
+            key_check_is_change=init_context["key_check_is_change"],
+            left_ticket_str=legs[0]["left_ticket_str"],
+            train_location=legs[0]["train_location"],
+            choose_seats=choose_seats,
+        )
+        confirm_data = confirm.get("data") if isinstance(confirm, dict) else None
+        if str(confirm.get("httpstatus", "200")) != "200" or confirm.get("status") is False:
+            raise RuntimeError(f"confirmLCForQueue 失败: {confirm}")
+        if isinstance(confirm_data, dict) and confirm_data.get("submitStatus") is False:
+            raise RuntimeError(f"confirmLCForQueue 未通过: {confirm}")
+        try:
+            confirm_log = self.report_confirm_log(
+                repeat_submit_token=repeat_submit_token,
+                log_type="lc",
+                referer="/otn/lcConfirmPassenger/initLc",
+            )
+        except Exception as e:  # noqa: BLE001
+            confirm_log = {"warning": f"basedata/log(type=lc) 失败（不影响下单流程）: {e}"}
+
+        wait_info = self.wait_for_order_id(
+            repeat_submit_token=repeat_submit_token,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval=poll_interval,
+            tour_flag="lc",
+            referer="/otn/lcConfirmPassenger/initLc",
+        )
+        order_id = wait_info["order_id"]
+        return {
+            "step": "ordered",
+            "plan_index": plan_index,
+            "order_id": order_id,
+            "seat_code": seat_code,
+            "seat_name": seat_name,
+            "legs": legs,
+            "plan": selected_row,
+            "selected_passengers": [p.get("passenger_name") for p in selected],
+            "checkUser": check_user_resp,
+            "submitOrderRequest": submit,
+            "initLcContext": init_context,
+            "checkOrderInfo": check_order,
+            "getQueueCount": queue_count,
+            "confirmLCForQueue": confirm,
+            "basedataLog": confirm_log,
+            "queryOrderWaitTime": wait_info["raw"],
+        }
 
     def book_ticket(
         self,
@@ -2827,6 +3254,30 @@ def build_parser() -> argparse.ArgumentParser:
     transfer_p.add_argument("--endpoint", default="queryG", choices=["queryG", "queryZ"], help="中转接口类型")
     transfer_p.add_argument("--limit", type=int, default=20, help="最多展示多少行")
 
+    transfer_book_p = sub.add_parser("transfer-book", help="提交中转订单（按中转方案下单）")
+    add_auth_args(transfer_book_p, require_username=False, allow_send_sms=False)
+    transfer_book_p.add_argument("--date", required=True, help="出发日期 YYYY-MM-DD")
+    transfer_book_p.add_argument("--from", dest="from_station", required=True, help="出发站（中文名/拼音/三字码）")
+    transfer_book_p.add_argument("--to", dest="to_station", required=True, help="到达站（中文名/拼音/三字码）")
+    transfer_book_p.add_argument("--middle", dest="middle_station", default="", help="指定换乘站（可选）")
+    transfer_book_p.add_argument("--plan-index", type=int, default=1, help="选择第几个中转方案（从1开始）")
+    transfer_book_p.add_argument("--result-index", type=int, default=0, help="分页游标（默认0）")
+    transfer_book_p.add_argument("--can-query", default="Y", choices=["Y", "N"], help="是否继续查询更多方案")
+    transfer_book_p.add_argument("--show-wz", action="store_true", help="显示无座方案")
+    transfer_book_p.add_argument("--seat", required=True, help="席别，例如 second_class / O / 一等座")
+    transfer_book_p.add_argument("--passengers", required=True, help="乘客姓名，多个用逗号分隔")
+    transfer_book_p.add_argument("--purpose", default="00", help="中转乘客类型编码（默认00）")
+    transfer_book_p.add_argument("--channel", default="E", help="渠道参数（默认E）")
+    transfer_book_p.add_argument(
+        "--endpoint",
+        default="queryG",
+        choices=["queryG", "queryZ"],
+        help="中转接口类型",
+    )
+    transfer_book_p.add_argument("--max-wait-seconds", type=int, default=30, help="排队轮询最长等待秒数")
+    transfer_book_p.add_argument("--poll-interval", type=float, default=1.5, help="排队轮询间隔秒数")
+    transfer_book_p.add_argument("--dry-run", action="store_true", help="只走到排队前检查，不执行最终提交")
+
     route_p = sub.add_parser("route", help="查询经停站")
     route_id = route_p.add_mutually_exclusive_group(required=True)
     route_id.add_argument("--train-no", help="列车内部 train_no（如 760000C95604）")
@@ -3214,6 +3665,54 @@ def main() -> int:
                     f"can_query={meta.get('can_query')}"
                 )
                 print_transfer_tickets(result["rows"], args.limit)
+            return 0
+
+        if args.command == "transfer-book":
+            ensure_logged_in(client, args)
+            passenger_names = [name.strip() for name in args.passengers.split(",") if name.strip()]
+            if not passenger_names:
+                raise RuntimeError("--passengers 至少包含一个乘客姓名。")
+            result = client.book_transfer_ticket(
+                train_date=args.date,
+                from_station=args.from_station,
+                to_station=args.to_station,
+                seat=args.seat,
+                passenger_names=passenger_names,
+                middle_station=args.middle_station,
+                plan_index=args.plan_index,
+                result_index=args.result_index,
+                can_query=args.can_query,
+                is_show_wz="Y" if args.show_wz else "N",
+                purpose_codes=args.purpose,
+                channel=args.channel,
+                endpoint=args.endpoint,
+                max_wait_seconds=args.max_wait_seconds,
+                poll_interval=args.poll_interval,
+                dry_run=args.dry_run,
+            )
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                if args.dry_run:
+                    print("中转下单预检完成（未提交最终排队确认）。")
+                    print("方案序号:", result.get("plan_index"))
+                    print("席别:", result.get("seat_name"), f"({result.get('seat_code')})")
+                    print("乘客:", ", ".join(result.get("selected_passengers") or []))
+                    legs = result.get("legs") if isinstance(result.get("legs"), list) else []
+                    for idx, leg in enumerate(legs, start=1):
+                        if not isinstance(leg, dict):
+                            continue
+                        print(
+                            f"  第{idx}程: {leg.get('train_code')} "
+                            f"{leg.get('from_station_code')}->{leg.get('to_station_code')} "
+                            f"{leg.get('train_date')}"
+                        )
+                else:
+                    print("中转下单请求已提交。")
+                    print("订单号:", result.get("order_id"))
+                    print("方案序号:", result.get("plan_index"))
+                    print("席别:", result.get("seat_name"), f"({result.get('seat_code')})")
+                    print("乘客:", ", ".join(result.get("selected_passengers") or []))
             return 0
 
         if args.command == "route":
