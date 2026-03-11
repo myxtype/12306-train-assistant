@@ -2867,9 +2867,7 @@ def main() -> int:
                 print(json.dumps(out, ensure_ascii=False, indent=2))
             else:
                 print("二维码已生成。")
-                print("uuid:", result.get("uuid"))
                 print("二维码图片:", str(image_path))
-                print("状态文件:", str(state_path))
                 print("下一步：用 12306 App 扫码并确认后执行 qr-login-check。")
             return 0
 
