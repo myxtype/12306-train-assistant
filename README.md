@@ -12,6 +12,7 @@
 - 查询候补排队状态
 - 查询候补订单（进行中/已处理）
 - 订票（提交订单并轮询订单号）
+- 支付信息获取（尝试生成支付链接）
 
 脚本文件：`client.py`
 
@@ -215,6 +216,12 @@ python3 client.py book \
   --passengers 张三
 ```
 
+说明：
+
+- 当前链路可以稳定完成下单并拿到订单号。
+- 脚本会尝试调用 `payOrder/paycheckNew` 返回支付链接参数。
+- 实测支付环节可能无法在网页链路完成，建议在 12306 App 的“待支付订单”中完成支付。
+
 多个乘客用逗号分隔：
 
 ```bash
@@ -232,6 +239,7 @@ python3 client.py book \
 - `--base-url`：默认 `https://kyfw.12306.cn`
 - `--timeout`：请求超时（秒）
 - `--cookie-file`：cookie 持久化路径（默认 `~/.kyfw_12306_cookies.json`）
+- `--no-browser-headers`：关闭浏览器风格请求头仿真（默认开启）
 - `--json`：输出原始 JSON
 
 ## 订票流程说明
@@ -247,9 +255,11 @@ python3 client.py book \
 7. `confirmSingleForQueue`
 8. 轮询 `queryOrderWaitTime` 获取订单号
 9. `resultOrderForDcQueue`
+10. `payOrder/init` + `payOrder/paycheckNew`（尝试生成支付链接）
 
 ## 注意事项
 
 - 12306 风控较严格，可能出现 `error.html`、排队超时、或需要额外校验。
 - 部分账号可能触发滑块/图片验证码（脚本当前不自动处理该场景）。
+- 即使成功返回支付参数，网页侧也可能无法完成支付；请优先在 12306 App 的待支付订单中支付。
 - 本工具仅供学习与自动化辅助，请遵守 12306 平台规则并控制请求频率。
