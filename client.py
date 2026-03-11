@@ -1313,11 +1313,17 @@ class KyfwClient:
             if upper == "WZ":
                 return "W"
             return upper
-        key = raw.lower()
-        if key in SEAT_CODE_MAP:
-            return SEAT_CODE_MAP[key]
-        if raw in SEAT_CODE_MAP:
-            return SEAT_CODE_MAP[raw]
+        candidates = [
+            raw,
+            raw.lower(),
+            re.sub(r"\s+", "", raw),
+            re.sub(r"\s+", "", raw).lower(),
+            re.sub(r"[\s\-]+", "_", raw),
+            re.sub(r"[\s\-]+", "_", raw).lower(),
+        ]
+        for key in candidates:
+            if key in SEAT_CODE_MAP:
+                return SEAT_CODE_MAP[key]
         supported = ", ".join(sorted(k for k in SEAT_CODE_MAP if k.isascii()))
         raise RuntimeError(
             f"不支持的席别: {seat}。可用示例: {supported}，或直接传席别代码(O/M/9/P/W/1/2/3/4/6/A/D/F/I/J/S/H)。"
@@ -1512,9 +1518,8 @@ class KyfwClient:
             id_type = str(item.get("passenger_id_type_code", "")).strip()
             id_no = str(item.get("passenger_id_no", "")).strip()
             mobile = str(item.get("mobile_no", "")).strip()
-            all_enc = str(item.get("allEncStr", "")).strip()
             passenger_type = str(item.get("passenger_type") or "1").strip() or "1"
-            if not (name and id_type and id_no and all_enc):
+            if not (name and id_type and id_no):
                 raise RuntimeError(f"乘客信息不完整，无法下单: {item}")
             ticket_segments.append(
                 ",".join(
@@ -1526,7 +1531,7 @@ class KyfwClient:
                         id_type,
                         id_no,
                         mobile,
-                        all_enc,
+                        "N",
                     ]
                 )
             )
@@ -1708,8 +1713,8 @@ class KyfwClient:
             "/otn/leftTicket/submitOrderRequest",
             data={
                 "secretStr": unquote(secret_str),
-                "train_date": self._format_train_date_for_12306(travel_date),
-                "back_train_date": self._format_train_date_for_12306(travel_date),
+                "train_date": travel_date.isoformat(),
+                "back_train_date": travel_date.isoformat(),
                 "tour_flag": "dc",
                 "purpose_codes": purpose_codes,
                 "query_from_station_name": from_station,
