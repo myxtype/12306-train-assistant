@@ -112,7 +112,7 @@ python3 client.py left-ticket --date 2026-03-23 --from 宁波 --to 宜春
 - `--endpoint queryG|queryZ`（默认 `queryG`）
 - `--purpose ADULT`（默认 `ADULT`）
 - `--limit`（控制展示行数）
-- `--with-price`（附带查询票价，会增加请求次数）
+- `--with-price`（从余票数据解析票价，不额外请求票价接口）
 
 ### 4) 查询中转车票
 

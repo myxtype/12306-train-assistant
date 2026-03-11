@@ -1485,25 +1485,10 @@ class KyfwClient:
                 "yp_info_new": parts[39] if len(parts) > 39 else "",
             }
             if with_price and row_idx < max(0, price_max_rows):
-                train_no = str(item.get("train_no") or "")
-                from_station_no = str(item.get("from_station_no") or "")
-                to_station_no = str(item.get("to_station_no") or "")
-                seat_types = str(item.get("seat_types") or "")
-                if train_no and from_station_no and to_station_no and seat_types:
-                    try:
-                        price_resp = self.query_ticket_price(
-                            train_no=train_no,
-                            from_station_no=from_station_no,
-                            to_station_no=to_station_no,
-                            seat_types=seat_types,
-                            train_date=train_date,
-                        )
-                        price_data = price_resp.get("data") if isinstance(price_resp, dict) else None
-                        if isinstance(price_data, dict):
-                            item["ticket_price"] = price_data
-                            item["ticket_price_text"] = self._format_ticket_price(price_data)
-                    except Exception as e:  # noqa: BLE001
-                        item["ticket_price_error"] = str(e)
+                price_data = self._parse_ticket_price_from_yp_info_new(str(item.get("yp_info_new") or ""))
+                if price_data:
+                    item["ticket_price"] = price_data
+                    item["ticket_price_text"] = self._format_ticket_price(price_data)
             parsed.append(item)
         return {
             "query": {
@@ -1558,6 +1543,48 @@ class KyfwClient:
             label = PRICE_KEY_LABEL_MAP.get(key, key)
             pairs.append(f"{label}={text}")
         return ", ".join(pairs)
+
+    @staticmethod
+    def _parse_ticket_price_from_yp_info_new(yp_info_new: str) -> dict[str, str]:
+        text = str(yp_info_new or "").strip()
+        if not text:
+            return {}
+        seat_codes = sorted(
+            [code for code in PRICE_KEY_LABEL_MAP if code != "OT"],
+            key=len,
+            reverse=True,
+        )
+        prices: dict[str, str] = {}
+        idx = 0
+        while idx < len(text):
+            matched = False
+            for seat_code in seat_codes:
+                if not text.startswith(seat_code, idx):
+                    continue
+                seg_start = idx + len(seat_code)
+                seg_end = seg_start + 9
+                if seg_end > len(text):
+                    continue
+                seg = text[seg_start:seg_end]
+                if not seg.isdigit():
+                    continue
+                amount_text = seg[:5]
+                flag_text = seg[5:]
+                normalized_code = "A9" if seat_code == "9" else seat_code
+                amount = f"¥{int(amount_text) / 10:.1f}"
+                if normalized_code not in prices:
+                    prices[normalized_code] = amount
+                if normalized_code == "W" and "WZ" not in prices:
+                    prices["WZ"] = amount
+                # 常见场景: O/1 的 3xxx 标记代表无座价格，补齐 WZ 便于统一展示。
+                if flag_text.startswith("3") and normalized_code in {"O", "1"} and "WZ" not in prices:
+                    prices["WZ"] = amount
+                idx = seg_end
+                matched = True
+                break
+            if not matched:
+                idx += 1
+        return prices
 
     @staticmethod
     def _extract_transfer_leg_seats(leg: dict[str, Any]) -> dict[str, str]:
@@ -2776,7 +2803,7 @@ def build_parser() -> argparse.ArgumentParser:
     left_p.add_argument("--purpose", default="ADULT", help="乘客类型，默认 ADULT")
     left_p.add_argument("--endpoint", default="queryG", choices=["queryG", "queryZ"], help="余票接口类型")
     left_p.add_argument("--limit", type=int, default=20, help="最多展示多少行")
-    left_p.add_argument("--with-price", action="store_true", help="附带查询票价（会增加请求次数）")
+    left_p.add_argument("--with-price", action="store_true", help="从余票数据解析票价（不额外请求）")
 
     transfer_p = sub.add_parser("transfer-ticket", help="查询中转车票")
     transfer_p.add_argument("--date", required=True, help="出发日期 YYYY-MM-DD")
