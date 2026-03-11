@@ -9,6 +9,8 @@
 - 查询中转车票
 - 查询经停站
 - 查询订单
+- 查询候补排队状态
+- 查询候补订单（进行中/已处理）
 - 订票（提交订单并轮询订单号）
 
 脚本文件：`client.py`
@@ -33,6 +35,7 @@ python3 client.py -h
 python3 client.py book -h
 python3 client.py transfer-ticket -h
 python3 client.py route -h
+python3 client.py candidate-orders -h
 ```
 
 ## 常用命令
@@ -153,7 +156,39 @@ python3 client.py orders --where G
 
 若 cookie 未登录，可额外提供 `--username`（及必要时的登录参数）自动补登录。
 
-### 8) 订票
+### 8) 候补相关查询
+
+候补排队状态：
+
+```bash
+python3 client.py candidate-queue
+```
+
+候补订单（默认查进行中）：
+
+```bash
+python3 client.py candidate-orders
+```
+
+查已处理候补订单：
+
+```bash
+python3 client.py candidate-orders --processed --start-date 2026-03-11 --end-date 2026-04-09
+```
+
+可选参数：
+
+- `candidate-orders --processed`（查已处理记录，不加则查进行中）
+- `candidate-orders --page-no`（页码，默认 `0`）
+- `candidate-orders --start-date/--end-date`（日期区间）
+- `candidate-orders --limit`（文本输出最多展示条数）
+
+说明：
+
+- 候补命令需要登录态（可沿用已有 cookie）。
+- 若 cookie 失效，可额外传 `--username`（及必要时登录参数）自动补登录。
+
+### 9) 订票
 
 先建议用 `--dry-run` 做预检（不提交最终排队确认）：
 

@@ -551,7 +551,7 @@ class KyfwClient:
             if "error.html" in final_url:
                 raise RuntimeError(
                     "12306 返回 error.html，通常是触发了风控或访问限制。"
-                    "请在可访问 12306 的网络环境重试，或降低请求频率。"
+                    "请在可访问 12306 的网络环境重试，或重新登录，或降低请求频率。"
                 )
             raise RuntimeError(f"接口返回 HTML 页面而非 JSON: {final_url}")
         parsed = parse_json_response(resp.text)
@@ -586,7 +586,7 @@ class KyfwClient:
         if "error.html" in final_url:
             raise RuntimeError(
                 "12306 返回 error.html，通常是触发了风控或访问限制。"
-                "请在可访问 12306 的网络环境重试，或降低请求频率。"
+                "请在可访问 12306 的网络环境重试，或重新登录，或降低请求频率。"
             )
         self._save_cookies()
         return resp.text or ""
@@ -847,6 +847,108 @@ class KyfwClient:
             data=data,
             referer="/otn/view/train_order.html",
         )
+
+    def query_candidate_queue(self) -> dict[str, Any]:
+        self.session.get(self._url("/otn/view/lineUp_order.html"), timeout=self.timeout)
+        data = self._request(
+            "POST",
+            "/otn/afterNateOrder/queryQueue",
+            data={},
+            referer="/otn/view/lineUp_order.html",
+        )
+        if str(data.get("httpstatus", "200")) != "200" or data.get("status") is False:
+            raise RuntimeError(f"查询候补排队状态失败: {data}")
+        payload = data.get("data")
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"候补排队返回结构异常: {data}")
+        return {
+            "queue": {
+                "flag": payload.get("flag"),
+                "status": payload.get("status"),
+                "is_async": payload.get("isAsync"),
+            },
+            "raw": data,
+        }
+
+    def query_candidate_orders(
+        self,
+        *,
+        processed: bool = False,
+        page_no: int = 0,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict[str, Any]:
+        start = dt.date.today() if start_date is None else dt.date.fromisoformat(start_date)
+        end = start + dt.timedelta(days=29) if end_date is None else dt.date.fromisoformat(end_date)
+        if start > end:
+            raise ValueError("--start-date 不能晚于 --end-date")
+        path = (
+            "/otn/afterNateOrder/queryProcessedHOrder"
+            if processed
+            else "/otn/afterNateOrder/queryUnHonourHOrder"
+        )
+
+        self.session.get(self._url("/otn/view/lineUp_order.html"), timeout=self.timeout)
+        data = self._request(
+            "POST",
+            path,
+            data={
+                "page_no": str(max(0, page_no)),
+                "query_start_date": start.isoformat(),
+                "query_end_date": end.isoformat(),
+            },
+            referer="/otn/view/lineUp_order.html",
+        )
+        if str(data.get("httpstatus", "200")) != "200" or data.get("status") is False:
+            raise RuntimeError(f"查询候补订单失败: {data}")
+        payload = data.get("data")
+        rows = payload.get("list") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise RuntimeError(f"候补订单返回结构异常: {data}")
+
+        parsed: list[dict[str, Any]] = []
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            needs = item.get("needs")
+            need = needs[0] if isinstance(needs, list) and needs and isinstance(needs[0], dict) else {}
+            passengers = item.get("passengers")
+            passenger_names: list[str] = []
+            if isinstance(passengers, list):
+                for p in passengers:
+                    if isinstance(p, dict) and p.get("passenger_name"):
+                        passenger_names.append(str(p.get("passenger_name")))
+            parsed.append(
+                {
+                    "reserve_no": item.get("reserve_no"),
+                    "sequence_no": item.get("sequence_no"),
+                    "status_name": item.get("status_name"),
+                    "status_code": item.get("status_code"),
+                    "reserve_time": item.get("reserve_time"),
+                    "realize_limit_time": item.get("realize_limit_time"),
+                    "prepay_amount": item.get("prepay_amount"),
+                    "ticket_price": item.get("ticket_price"),
+                    "refundable": item.get("refundable"),
+                    "train_code": need.get("board_train_code"),
+                    "train_date": need.get("train_date"),
+                    "from_station": need.get("from_station_name"),
+                    "to_station": need.get("to_station_name"),
+                    "start_time": need.get("start_time"),
+                    "arrive_time": need.get("arrive_time"),
+                    "seat_name": need.get("seat_name"),
+                    "passengers": passenger_names,
+                }
+            )
+        return {
+            "query": {
+                "type": "processed" if processed else "unhonour",
+                "page_no": str(max(0, page_no)),
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+            },
+            "rows": parsed,
+            "raw": data,
+        }
 
     def _load_station_index(self) -> dict[str, str]:
         if self._station_index is not None:
@@ -1696,8 +1798,16 @@ def print_orders(resp: dict[str, Any]) -> None:
     orders = data.get("OrderDTODataList", [])
     print(f"订单总数: {total}, 当前页: {len(orders)}")
     for order in orders:
+        order_date = order.get("order_date") or "--"
+        # `order_date` 是下单时间，`start_train_date_page` 才是出行日期。
+        travel_date = (
+            order.get("start_train_date_page")
+            or order.get("start_train_date")
+            or order.get("train_date")
+            or "--"
+        )
         print(
-            f"- 订单号: {order.get('sequence_no')} | 日期: {order.get('order_date')} | "
+            f"- 订单号: {order.get('sequence_no')} | 下单日期: {order_date} | 出行日期: {travel_date} | "
             f"{order.get('train_code_page')} {order.get('from_station_name_page')} -> {order.get('to_station_name_page')} | "
             f"{order.get('start_time_page')} -> {order.get('arrive_time_page')} | 人数: {order.get('ticket_totalnum')}"
         )
@@ -1707,6 +1817,35 @@ def print_orders(resp: dict[str, Any]) -> None:
                 f"  乘客: {passenger} | 席别: {ticket.get('seat_name')} | "
                 f"车厢座位: {ticket.get('coach_no')}/{ticket.get('seat_no')} | 状态: {ticket.get('ticket_status_name')}"
             )
+
+
+def print_candidate_queue(queue: dict[str, Any]) -> None:
+    flag = queue.get("flag")
+    status = queue.get("status")
+    is_async = queue.get("is_async")
+    print("候补查询开关:", "开启" if flag else "关闭")
+    print("候补队列状态码:", status)
+    print("异步处理:", "是" if is_async else "否")
+
+
+def print_candidate_orders(rows: list[dict[str, Any]], limit: int) -> None:
+    shown = rows[: max(0, limit)]
+    print(f"候补订单总数: {len(rows)}, 展示: {len(shown)}")
+    for item in shown:
+        passengers = ",".join(item.get("passengers") or [])
+        print(
+            f"- 候补单: {item.get('reserve_no') or '--'} | 状态: {item.get('status_name') or '--'}({item.get('status_code') or '--'}) | "
+            f"提交日期: {item.get('reserve_time') or '--'} | 截止兑现: {item.get('realize_limit_time') or '--'}"
+        )
+        print(
+            f"  行程: {item.get('train_date') or '--'} {item.get('train_code') or '--'} "
+            f"{item.get('from_station') or '--'} -> {item.get('to_station') or '--'} "
+            f"{item.get('start_time') or '--'}->{item.get('arrive_time') or '--'} | "
+            f"席别: {item.get('seat_name') or '--'} | 乘客: {passengers or '--'}"
+        )
+        print(
+            f"  金额: 预付款={item.get('prepay_amount') or '--'} | 票款={item.get('ticket_price') or '--'} | 可退={item.get('refundable') or '--'}"
+        )
 
 
 def print_left_tickets(rows: list[dict[str, Any]], limit: int) -> None:
@@ -1826,6 +1965,21 @@ def build_parser() -> argparse.ArgumentParser:
     order_p.add_argument("--page-size", type=int, default=8)
     order_p.add_argument("--query-type", type=int, default=1)
     order_p.add_argument("--train-name", default="", help="按车次过滤（可选）")
+
+    candidate_queue_p = sub.add_parser("candidate-queue", help="查询候补排队状态")
+    add_auth_args(candidate_queue_p, require_username=False, allow_send_sms=False)
+
+    candidate_orders_p = sub.add_parser("candidate-orders", help="查询候补订单")
+    add_auth_args(candidate_orders_p, require_username=False, allow_send_sms=False)
+    candidate_orders_p.add_argument(
+        "--processed",
+        action="store_true",
+        help="查询已处理候补订单（默认查询进行中的候补订单）",
+    )
+    candidate_orders_p.add_argument("--page-no", type=int, default=0, help="页码（默认0）")
+    candidate_orders_p.add_argument("--start-date", help="查询起始日期 YYYY-MM-DD（默认今天）")
+    candidate_orders_p.add_argument("--end-date", help="查询结束日期 YYYY-MM-DD（默认起始日期+29天）")
+    candidate_orders_p.add_argument("--limit", type=int, default=20, help="最多展示多少条候补订单")
 
     left_p = sub.add_parser("left-ticket", help="查询车次余票")
     left_p.add_argument("--date", required=True, help="出发日期 YYYY-MM-DD")
@@ -1989,6 +2143,34 @@ def main() -> int:
             else:
                 print("未完成订单接口状态:", no_complete.get("status"), no_complete.get("httpstatus"))
                 print_orders(orders)
+            return 0
+
+        if args.command == "candidate-queue":
+            ensure_logged_in(client, args)
+            result = client.query_candidate_queue()
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                print_candidate_queue(result["queue"])
+            return 0
+
+        if args.command == "candidate-orders":
+            ensure_logged_in(client, args)
+            result = client.query_candidate_orders(
+                processed=args.processed,
+                page_no=args.page_no,
+                start_date=args.start_date,
+                end_date=args.end_date,
+            )
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                q = result["query"]
+                print(
+                    f"查询条件: type={q['type']} | page_no={q['page_no']} | "
+                    f"{q['start_date']} -> {q['end_date']}"
+                )
+                print_candidate_orders(result["rows"], args.limit)
             return 0
 
         if args.command == "left-ticket":
