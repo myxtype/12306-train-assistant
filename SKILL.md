@@ -1,7 +1,7 @@
 ---
 name: 12306-train-assistant
-description: 12306 查询与订票辅助技能，支持余票查询、经停站查询、中转换乘、候补查询、登录状态检查及下单流程；当用户提到火车票、高铁票、经停站、中转、候补或 12306 查票时触发。
-version: 0.1.0
+description: 12306 查询与订票辅助技能，支持余票查询、经停站查询、中转换乘、候补查询、登录状态检查、下单与支付链接获取；当用户提到火车票、高铁票、经停站、中转、候补或 12306 查票时触发。
+version: 0.2.0
 icon: 🚄
 ---
 
@@ -17,6 +17,7 @@ icon: 🚄
 - 登录态检查：`status`
 - 候补查询：`candidate-queue` / `candidate-orders`
 - 需要登录的操作：`passengers` / `orders` / `book`
+- 支付参数获取：`payOrder/init` + `payOrder/paycheckNew`（由 `book` 自动触发）
 
 ## 触发信号
 
@@ -35,6 +36,7 @@ icon: 🚄
 3. 站名支持中文/拼音/三字码，直接传给命令即可。
 4. `route` 优先用 `--train-code`，减少用户提供 `train_no` 的负担。
 5. 失败时先给出可执行修复建议（缺参数、日期格式、站名不匹配、风控限制等）。
+6. `book` 成功后优先告知订单号与支付链接；若网页支付不可用，明确建议去 12306 App 的“待支付订单”继续支付。
 
 ## 常用示例
 
@@ -87,6 +89,9 @@ python3 client.py book --date 2026-03-23 --from 北京南 --to 上海虹桥 --tr
 
 # 正式提交
 python3 client.py book --date 2026-03-23 --from 北京南 --to 上海虹桥 --train-code G101 --seat second_class --passengers 张三
+
+# 单人选座（D 会自动归一化为 1D）
+python3 client.py book --date 2026-03-23 --from 北京南 --to 上海虹桥 --train-code G101 --seat second_class --passengers 张三 --choose-seats D
 ```
 
 ### 示例 7：候补查询
@@ -111,6 +116,7 @@ python3 client.py candidate-orders --processed --start-date 2026-03-11 --end-dat
 | `--base-url` | 否 | `https://kyfw.12306.cn` | 12306 服务地址 |
 | `--timeout` | 否 | `15` | 请求超时时间（秒） |
 | `--cookie-file` | 否 | `~/.kyfw_12306_cookies.json` | cookie 持久化文件 |
+| `--no-browser-headers` | 否 | 关闭 | 关闭浏览器风格请求头仿真（默认开启） |
 | `--json` | 否 | 关闭 | 以 JSON 输出结果 |
 
 ### `left-ticket` 余票查询
@@ -228,7 +234,7 @@ python3 client.py candidate-orders --processed --start-date 2026-03-11 --end-dat
 | `--passengers` | 是 | 无 | 乘客姓名，多个用逗号分隔 |
 | `--purpose` | 否 | `ADULT` | 乘客类型 |
 | `--endpoint` | 否 | `queryG` | 余票接口类型 |
-| `--choose-seats` | 否 | 空 | 选座（如 `A1B1`） |
+| `--choose-seats` | 否 | 空 | 选座（如 `1D`；单人可传 `D`） |
 | `--max-wait-seconds` | 否 | `30` | 排队轮询最长等待秒数 |
 | `--poll-interval` | 否 | `1.5` | 排队轮询间隔（秒） |
 | `--dry-run` | 否 | 关闭 | 只检查不提交最终确认 |
@@ -250,6 +256,7 @@ python3 client.py candidate-orders --processed --start-date 2026-03-11 --end-dat
 
 - 默认输出文本结果并概括关键信息。
 - 若用户说“返回 JSON / 机器可读”，添加 `--json` 并返回结构化摘要。
+- `book` 成功时应突出 `order_id`；若返回 `payment.pay_url`，一并给出支付链接。
 - 当前 CLI 没有内置 `csv` 输出，不要承诺 CSV。
 
 ## 示例工作流
@@ -295,3 +302,4 @@ python3 client.py candidate-orders --processed --start-date <起始日期> --end
 3. 订票链路依赖登录态与乘车人信息，建议先 `status`/`passengers`。
 4. 站点解析依赖 12306 站名字典，极少数别名可能无法直接命中。
 5. 相对日期必须换算成绝对日期再执行命令。
+6. 脚本会尝试返回支付链接，但实测网页侧可能无法完成支付；应提示用户去 12306 App 的“待支付订单”支付。

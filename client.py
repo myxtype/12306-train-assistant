@@ -1578,6 +1578,43 @@ class KyfwClient:
             old_segments.append(f"{name},{id_type},{id_no},{passenger_type}_")
         return "_".join(ticket_segments), "".join(old_segments)
 
+    @staticmethod
+    def _normalize_choose_seats(raw_choose_seats: str, passenger_count: int) -> str:
+        text = (raw_choose_seats or "").strip().upper()
+        if not text:
+            return ""
+        text = text.replace("，", ",").replace("、", ",")
+
+        def normalize_token(token: str, index: int) -> str:
+            tok = token.strip().upper()
+            if not tok:
+                return ""
+            if re.fullmatch(r"[A-Z]", tok):
+                return f"{index}{tok}"
+            if re.fullmatch(r"[1-9][A-Z]", tok):
+                return tok
+            if re.fullmatch(r"[A-Z][1-9]", tok):
+                return f"{tok[1]}{tok[0]}"
+            return tok
+
+        if "," in text:
+            parts = [p.strip() for p in text.split(",") if p.strip()]
+            normalized_parts: list[str] = []
+            for idx, part in enumerate(parts, start=1):
+                normalized_parts.append(normalize_token(part, idx))
+            return "".join(normalized_parts)
+
+        compact = re.sub(r"\s+", "", text)
+        if re.fullmatch(r"[A-Z]+", compact):
+            if len(compact) == 1:
+                return f"1{compact}"
+            return "".join(f"{idx}{seat}" for idx, seat in enumerate(compact, start=1))
+        if re.fullmatch(r"[A-Z][1-9]", compact):
+            return f"{compact[1]}{compact[0]}"
+        if re.fullmatch(r"[1-9][A-Z]", compact):
+            return compact
+        return compact
+
     def check_order_info(
         self,
         *,
@@ -1878,6 +1915,7 @@ class KyfwClient:
         passengers_resp = self.get_passenger_dtos(repeat_submit_token)
         selected = self._select_passengers(passengers_resp, passenger_names)
         passenger_ticket_str, old_passenger_str = self._build_passenger_payload(selected, seat_code)
+        normalized_choose_seats = self._normalize_choose_seats(choose_seats, len(selected))
 
         check_order = self.check_order_info(
             repeat_submit_token=repeat_submit_token,
@@ -1921,7 +1959,7 @@ class KyfwClient:
             key_check_is_change=init_context["key_check_is_change"],
             left_ticket_str=init_context["left_ticket_str"],
             train_location=init_context["train_location"],
-            choose_seats=choose_seats,
+            choose_seats=normalized_choose_seats,
         )
         confirm_data = confirm.get("data") if isinstance(confirm, dict) else None
         if str(confirm.get("httpstatus", "200")) != "200" or confirm.get("status") is False:
@@ -2226,7 +2264,11 @@ def build_parser() -> argparse.ArgumentParser:
     book_p.add_argument("--passengers", required=True, help="乘客姓名，多个用逗号分隔")
     book_p.add_argument("--purpose", default="ADULT", help="乘客类型，默认 ADULT")
     book_p.add_argument("--endpoint", default="queryG", choices=["queryG", "queryZ"], help="余票接口类型")
-    book_p.add_argument("--choose-seats", default="", help="选座（可选，示例：A1B1）")
+    book_p.add_argument(
+        "--choose-seats",
+        default="",
+        help="选座（可选；示例：D、1D、D1、A,B；其他格式将原样透传）",
+    )
     book_p.add_argument("--max-wait-seconds", type=int, default=30, help="排队轮询最长等待秒数")
     book_p.add_argument("--poll-interval", type=float, default=1.5, help="排队轮询间隔秒数")
     book_p.add_argument("--dry-run", action="store_true", help="只走到排队前检查，不执行最终提交")
