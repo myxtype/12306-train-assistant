@@ -73,7 +73,7 @@ python3 client.py login --username <账号> --password <密码>
 python3 client.py login --username <账号> --id-last4 <证件后4位> --send-sms
 python3 client.py login --username <账号> --id-last4 <证件后4位> --sms-code <6位验证码>
 python3 client.py qr-login-create --qr-image-file ./12306_qr_login.png
-python3 client.py qr-login-check
+nohup python3 client.py qr-login-check > /dev/null 2>&1 &
 ```
 
 ### 示例 5：乘车人与订单
@@ -195,10 +195,7 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 
 | 参数 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `--uuid` | 否 | 从状态文件读取 | 二维码 uuid |
-| `--appid` | 否 | 从状态文件读取或 `otn` | 二维码登录 appid |
-| `--state-file` | 否 | 从 `--cookie-file` 推导 | 二维码状态文件路径 |
-| `--no-finalize` | 否 | 关闭 | 仅检查扫码状态，不执行登录落地 |
+| 无 | - | - | 固定 1 秒轮询并持续等待，直到成功或二维码失效 |
 
 ### `passengers` 乘车人查询
 

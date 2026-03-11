@@ -73,8 +73,8 @@ python3 client.py login --username <账号> --password <密码>
 # 1) 生成二维码后立即退出
 python3 client.py qr-login-create --qr-image-file ./12306_qr_login.png
 
-# 2) App 扫码并点击确认后，再执行检查
-python3 client.py qr-login-check
+# 2) 让 AI 用后台方式立即启动检查（固定1秒轮询、持续等待）
+nohup python3 client.py qr-login-check > /tmp/12306_qr_check.log 2>&1 &
 ```
 
 如果不传 `--qr-image-file`，脚本会自动生成随机文件名，优先写到 `client.py` 所在目录，失败时回退到系统 `tmp` 目录，并输出最终路径。
@@ -82,8 +82,7 @@ python3 client.py qr-login-check
 可选参数：
 
 - `qr-login-create --state-file`（二维码状态文件，默认从 `--cookie-file` 推导）
-- `qr-login-check --uuid`（不传则从状态文件读取）
-- `qr-login-check --no-finalize`（仅查扫码状态，不做登录落地）
+- `qr-login-check` 无专属参数（固定1秒轮询、持续等待）
 
 ### 2) 查询登录状态
 
