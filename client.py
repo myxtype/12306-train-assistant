@@ -972,6 +972,210 @@ class KyfwClient:
             "raw": data,
         }
 
+    def query_transfer_ticket(
+        self,
+        *,
+        train_date: str,
+        from_station: str,
+        to_station: str,
+        middle_station: str = "",
+        result_index: int = 0,
+        can_query: str = "Y",
+        is_show_wz: str = "N",
+        purpose_codes: str = "00",
+        channel: str = "E",
+        endpoint: str = "queryG",
+    ) -> dict[str, Any]:
+        dt.date.fromisoformat(train_date)
+        can_query = can_query.strip().upper() or "Y"
+        is_show_wz = is_show_wz.strip().upper() or "N"
+        if can_query not in {"Y", "N"}:
+            raise ValueError("--can-query 仅支持 Y/N")
+        if is_show_wz not in {"Y", "N"}:
+            raise ValueError("--show-wz 仅支持 Y/N")
+        from_code = self.station_to_code(from_station)
+        to_code = self.station_to_code(to_station)
+        middle_raw = middle_station.strip()
+        middle_code = self.station_to_code(middle_raw) if middle_raw else ""
+
+        # Warm up lc-query cookies/session before querying API.
+        self.session.get(self._url("/otn/lcQuery/init"), timeout=self.timeout)
+        data = self._request(
+            "GET",
+            f"/lcquery/{endpoint}",
+            params={
+                "train_date": train_date,
+                "from_station_telecode": from_code,
+                "to_station_telecode": to_code,
+                "middle_station": middle_code,
+                "result_index": str(max(0, int(result_index))),
+                "can_query": can_query,
+                "isShowWZ": is_show_wz,
+                "purpose_codes": purpose_codes,
+                "channel": channel,
+            },
+            referer="/otn/lcQuery/init",
+        )
+        if data.get("status") is False:
+            raise RuntimeError(f"查询中转车票失败: {data.get('errorMsg') or data}")
+        payload = data.get("data")
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"查询中转车票返回结构异常: {data}")
+
+        rows = payload.get("middleList")
+        parsed: list[dict[str, Any]] = []
+        if isinstance(rows, list):
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                full = item.get("fullList")
+                legs = [leg for leg in full if isinstance(leg, dict)] if isinstance(full, list) else []
+                first_leg = legs[0] if len(legs) > 0 else {}
+                second_leg = legs[1] if len(legs) > 1 else {}
+                parsed.append(
+                    {
+                        "from_station": item.get("from_station_name"),
+                        "to_station": item.get("end_station_name"),
+                        "start_time": item.get("start_time"),
+                        "arrive_time": item.get("arrive_time"),
+                        "total_duration": item.get("all_lishi"),
+                        "total_duration_minutes": item.get("all_lishi_minutes"),
+                        "wait_time": item.get("wait_time"),
+                        "wait_time_minutes": item.get("wait_time_minutes"),
+                        "middle_station": item.get("middle_station_name"),
+                        "middle_station_code": item.get("middle_station_code"),
+                        "same_train": item.get("same_train"),
+                        "score": item.get("score"),
+                        "score_str": item.get("score_str"),
+                        "first_leg_train_code": first_leg.get("station_train_code"),
+                        "first_leg_start_time": first_leg.get("start_time"),
+                        "first_leg_arrive_time": first_leg.get("arrive_time"),
+                        "first_leg_second_class": first_leg.get("ze_num", "--"),
+                        "first_leg_first_class": first_leg.get("zy_num", "--"),
+                        "second_leg_train_code": second_leg.get("station_train_code"),
+                        "second_leg_start_time": second_leg.get("start_time"),
+                        "second_leg_arrive_time": second_leg.get("arrive_time"),
+                        "second_leg_second_class": second_leg.get("ze_num", "--"),
+                        "second_leg_first_class": second_leg.get("zy_num", "--"),
+                    }
+                )
+
+        return {
+            "query": {
+                "date": train_date,
+                "from_station": from_station,
+                "to_station": to_station,
+                "middle_station": middle_station,
+                "from_code": from_code,
+                "to_code": to_code,
+                "middle_code": middle_code,
+                "endpoint": endpoint,
+                "purpose_codes": purpose_codes,
+                "can_query": can_query,
+                "is_show_wz": is_show_wz,
+                "channel": channel,
+                "result_index": str(max(0, int(result_index))),
+            },
+            "meta": {
+                "flag": payload.get("flag"),
+                "result_index": payload.get("result_index"),
+                "can_query": payload.get("can_query"),
+                "middle_station_list": payload.get("middleStationList"),
+            },
+            "rows": parsed,
+            "raw": data,
+        }
+
+    def query_route(
+        self,
+        *,
+        train_no: str,
+        train_date: str,
+        from_station: str,
+        to_station: str,
+    ) -> dict[str, Any]:
+        dt.date.fromisoformat(train_date)
+        train_no = train_no.strip()
+        if not train_no:
+            raise ValueError("--train-no 不能为空")
+        from_code = self.station_to_code(from_station)
+        to_code = self.station_to_code(to_station)
+
+        # Warm up lc-query cookies/session before querying API.
+        self.session.get(self._url("/otn/lcQuery/init"), timeout=self.timeout)
+        data = self._request(
+            "GET",
+            "/otn/czxx/queryByTrainNo",
+            params={
+                "train_no": train_no,
+                "from_station_telecode": from_code,
+                "to_station_telecode": to_code,
+                "depart_date": train_date,
+            },
+            referer="/otn/lcQuery/init",
+        )
+        if str(data.get("httpstatus", "200")) != "200" or data.get("status") is False:
+            raise RuntimeError(f"查询经停站失败: {data}")
+
+        payload = data.get("data")
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise RuntimeError(f"查询经停站返回结构异常: {data}")
+
+        parsed: list[dict[str, Any]] = []
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            parsed.append(
+                {
+                    "station_no": item.get("station_no"),
+                    "station_name": item.get("station_name"),
+                    "arrive_time": item.get("arrive_time"),
+                    "start_time": item.get("start_time"),
+                    "stopover_time": item.get("stopover_time"),
+                    "is_enabled": bool(item.get("isEnabled")),
+                    "station_train_code": item.get("station_train_code"),
+                    "start_station_name": item.get("start_station_name"),
+                    "end_station_name": item.get("end_station_name"),
+                    "train_class_name": item.get("train_class_name"),
+                }
+            )
+        return {
+            "query": {
+                "train_no": train_no,
+                "date": train_date,
+                "from_station": from_station,
+                "to_station": to_station,
+                "from_code": from_code,
+                "to_code": to_code,
+            },
+            "rows": parsed,
+            "raw": data,
+        }
+
+    def resolve_train_no_by_train_code(
+        self,
+        *,
+        train_date: str,
+        from_station: str,
+        to_station: str,
+        train_code: str,
+        endpoint: str = "queryG",
+        purpose_codes: str = "ADULT",
+    ) -> dict[str, Any]:
+        left_ticket = self.query_left_ticket(
+            train_date=train_date,
+            from_station=from_station,
+            to_station=to_station,
+            purpose_codes=purpose_codes,
+            endpoint=endpoint,
+        )
+        train_row = self._find_train_row(left_ticket.get("rows", []), train_code)
+        train_no = str(train_row.get("train_no", "")).strip()
+        if not train_no:
+            raise RuntimeError(f"车次 {train_code} 未返回 train_no，无法查询经停站。")
+        return {"train_no": train_no, "train": train_row, "left_ticket": left_ticket}
+
     @staticmethod
     def _extract_with_patterns(text: str, patterns: list[str], field: str) -> str:
         for pattern in patterns:
@@ -1525,6 +1729,43 @@ def print_left_tickets(rows: list[dict[str, Any]], limit: int) -> None:
         )
 
 
+def print_transfer_tickets(rows: list[dict[str, Any]], limit: int) -> None:
+    shown = rows[: max(0, limit)]
+    print(f"共返回中转方案: {len(rows)}, 展示: {len(shown)}")
+    header = "序号 换乘站   车次(第一程->第二程)   发时->到时   总耗时   等待"
+    print(header)
+    print("-" * len(header))
+    for idx, item in enumerate(shown, start=1):
+        middle_station = str(item.get("middle_station") or "--")
+        train_pair = f"{item.get('first_leg_train_code') or '--'}->{item.get('second_leg_train_code') or '--'}"
+        time_pair = f"{item.get('start_time') or '--'}->{item.get('arrive_time') or '--'}"
+        total_duration = str(item.get("total_duration") or "--")
+        wait_time = str(item.get("wait_time") or "--")
+        print(
+            f"{idx:<4} {middle_station:<8} {train_pair:<24} {time_pair:<13} {total_duration:<8} {wait_time:<8}"
+        )
+
+
+def print_route(rows: list[dict[str, Any]], limit: int) -> None:
+    shown = rows[: max(0, limit)]
+    print(f"共返回经停站: {len(rows)}, 展示: {len(shown)}")
+    header = "序号 站序 站名       到达     开车     停留"
+    print(header)
+    print("-" * len(header))
+    for idx, item in enumerate(shown, start=1):
+        station_no = str(item.get("station_no") or "--")
+        station_name = str(item.get("station_name") or "--")
+        arrive_time = str(item.get("arrive_time") or "--")
+        start_time = str(item.get("start_time") or "--")
+        stopover_time = str(item.get("stopover_time") or "--")
+        marker = "*" if item.get("is_enabled") else " "
+        print(
+            f"{marker}{idx:<3} {station_no:<4} {station_name:<10} {arrive_time:<8} {start_time:<8} {stopover_time:<8}"
+        )
+    if shown:
+        print("* 表示当前查询区间内的站点")
+
+
 def _mask_middle(value: str, keep_head: int = 3, keep_tail: int = 2) -> str:
     text = (value or "").strip()
     if len(text) <= keep_head + keep_tail:
@@ -1593,6 +1834,30 @@ def build_parser() -> argparse.ArgumentParser:
     left_p.add_argument("--purpose", default="ADULT", help="乘客类型，默认 ADULT")
     left_p.add_argument("--endpoint", default="queryG", choices=["queryG", "queryZ"], help="余票接口类型")
     left_p.add_argument("--limit", type=int, default=20, help="最多展示多少行")
+
+    transfer_p = sub.add_parser("transfer-ticket", help="查询中转车票")
+    transfer_p.add_argument("--date", required=True, help="出发日期 YYYY-MM-DD")
+    transfer_p.add_argument("--from", dest="from_station", required=True, help="出发站（中文名/拼音/三字码）")
+    transfer_p.add_argument("--to", dest="to_station", required=True, help="到达站（中文名/拼音/三字码）")
+    transfer_p.add_argument("--middle", dest="middle_station", default="", help="指定换乘站（可选）")
+    transfer_p.add_argument("--result-index", type=int, default=0, help="分页游标（默认0）")
+    transfer_p.add_argument("--can-query", default="Y", choices=["Y", "N"], help="是否继续查询更多方案")
+    transfer_p.add_argument("--show-wz", action="store_true", help="显示无座方案")
+    transfer_p.add_argument("--purpose", default="00", help="乘客类型编码（默认00）")
+    transfer_p.add_argument("--channel", default="E", help="渠道参数（默认E）")
+    transfer_p.add_argument("--endpoint", default="queryG", choices=["queryG", "queryZ"], help="中转接口类型")
+    transfer_p.add_argument("--limit", type=int, default=20, help="最多展示多少行")
+
+    route_p = sub.add_parser("route", help="查询经停站")
+    route_id = route_p.add_mutually_exclusive_group(required=True)
+    route_id.add_argument("--train-no", help="列车内部 train_no（如 760000C95604）")
+    route_id.add_argument("--train-code", help="车次号（如 C956 / G1234），会自动解析 train_no")
+    route_p.add_argument("--date", required=True, help="出发日期 YYYY-MM-DD")
+    route_p.add_argument("--from", dest="from_station", required=True, help="出发站（中文名/拼音/三字码）")
+    route_p.add_argument("--to", dest="to_station", required=True, help="到达站（中文名/拼音/三字码）")
+    route_p.add_argument("--endpoint", default="queryG", choices=["queryG", "queryZ"], help="解析车次号时使用的余票接口类型")
+    route_p.add_argument("--purpose", default="ADULT", help="解析车次号时使用的乘客类型，默认 ADULT")
+    route_p.add_argument("--limit", type=int, default=200, help="最多展示多少站")
 
     book_p = sub.add_parser("book", help="订票（提交订单）")
     add_auth_args(book_p, require_username=False, allow_send_sms=False)
@@ -1743,6 +2008,71 @@ def main() -> int:
                     f"{q['to_station']}({q['to_code']}) | endpoint={q['endpoint']}"
                 )
                 print_left_tickets(result["rows"], args.limit)
+            return 0
+
+        if args.command == "transfer-ticket":
+            result = client.query_transfer_ticket(
+                train_date=args.date,
+                from_station=args.from_station,
+                to_station=args.to_station,
+                middle_station=args.middle_station,
+                result_index=args.result_index,
+                can_query=args.can_query,
+                is_show_wz="Y" if args.show_wz else "N",
+                purpose_codes=args.purpose,
+                channel=args.channel,
+                endpoint=args.endpoint,
+            )
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                q = result["query"]
+                print(
+                    f"查询条件: {q['date']} {q['from_station']}({q['from_code']}) -> "
+                    f"{q['to_station']}({q['to_code']}) | middle={q['middle_station'] or '任意'} "
+                    f"| endpoint={q['endpoint']}"
+                )
+                meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+                print(
+                    f"分页信息: result_index={meta.get('result_index')} "
+                    f"can_query={meta.get('can_query')}"
+                )
+                print_transfer_tickets(result["rows"], args.limit)
+            return 0
+
+        if args.command == "route":
+            route_train_no = args.train_no
+            resolved_train = None
+            if not route_train_no:
+                resolved = client.resolve_train_no_by_train_code(
+                    train_date=args.date,
+                    from_station=args.from_station,
+                    to_station=args.to_station,
+                    train_code=args.train_code,
+                    endpoint=args.endpoint,
+                    purpose_codes=args.purpose,
+                )
+                route_train_no = resolved["train_no"]
+                resolved_train = resolved.get("train")
+            result = client.query_route(
+                train_no=route_train_no,
+                train_date=args.date,
+                from_station=args.from_station,
+                to_station=args.to_station,
+            )
+            if args.json:
+                if resolved_train is not None:
+                    result["resolved_train"] = resolved_train
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                q = result["query"]
+                if args.train_code:
+                    print(f"已根据车次 {args.train_code} 解析 train_no={q['train_no']}")
+                print(
+                    f"查询条件: train_no={q['train_no']} | {q['date']} "
+                    f"{q['from_station']}({q['from_code']}) -> {q['to_station']}({q['to_code']})"
+                )
+                print_route(result["rows"], args.limit)
             return 0
 
         if args.command == "book":

@@ -6,6 +6,8 @@
 - 登录状态检查（已登录时返回用户关键信息）
 - 查询当前账号乘车人信息
 - 查询余票
+- 查询中转车票
+- 查询经停站
 - 查询订单
 - 订票（提交订单并轮询订单号）
 
@@ -29,6 +31,8 @@ pip install requests
 ```bash
 python3 client.py -h
 python3 client.py book -h
+python3 client.py transfer-ticket -h
+python3 client.py route -h
 ```
 
 ## 常用命令
@@ -82,7 +86,50 @@ python3 client.py left-ticket --date 2026-03-23 --from 宁波 --to 宜春
 - `--purpose ADULT`（默认 `ADULT`）
 - `--limit`（控制展示行数）
 
-### 4) 查询当前账号乘车人
+### 4) 查询中转车票
+
+```bash
+python3 client.py transfer-ticket --date 2026-03-23 --from 南部 --to 成都东
+```
+
+可选参数：
+
+- `--middle`（指定换乘站，可不传）
+- `--result-index`（分页游标，默认 `0`）
+- `--can-query Y|N`（是否继续查询更多方案，默认 `Y`）
+- `--show-wz`（显示无座方案；默认不显示）
+- `--purpose`（乘客类型编码，默认 `00`）
+- `--channel`（默认 `E`）
+- `--endpoint queryG|queryZ`（默认 `queryG`）
+- `--limit`（控制展示行数）
+
+JSON 输出：
+
+```bash
+python3 client.py transfer-ticket --date 2026-03-23 --from NBE --to ICW --json
+```
+
+### 5) 查询经停站
+
+```bash
+python3 client.py route --train-code C956 --date 2026-03-23 --from 南部 --to 南充北
+```
+
+可选参数：
+
+- `--train-code`（车次号，如 `C956`；会自动解析 `train_no`）
+- `--train-no`（直接传列车内部 `train_no`）
+- `--endpoint queryG|queryZ`（`--train-code` 模式下用于解析，默认 `queryG`）
+- `--purpose`（`--train-code` 模式下用于解析，默认 `ADULT`）
+- `--limit`（最多展示多少站，默认 `200`）
+- `--json`（输出原始 JSON）
+
+参数说明：
+
+- `--train-no` 和 `--train-code` 二选一，至少传一个。
+- 传 `--train-code` 时，脚本会先走一次余票查询自动解析 `train_no`。
+
+### 6) 查询当前账号乘车人
 
 ```bash
 python3 client.py passengers
@@ -93,7 +140,7 @@ python3 client.py passengers
 - `--limit`（最多展示多少个乘车人）
 - `--json`（输出原始 JSON）
 
-### 5) 查询订单
+### 7) 查询订单
 
 ```bash
 python3 client.py orders --where G
@@ -106,7 +153,7 @@ python3 client.py orders --where G
 
 若 cookie 未登录，可额外提供 `--username`（及必要时的登录参数）自动补登录。
 
-### 6) 订票
+### 8) 订票
 
 先建议用 `--dry-run` 做预检（不提交最终排队确认）：
 
