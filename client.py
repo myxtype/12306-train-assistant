@@ -9,7 +9,9 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
+import uuid as uuidlib
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlencode
@@ -18,6 +20,7 @@ import requests
 
 BASE_URL = "https://kyfw.12306.cn"
 DEFAULT_COOKIE_FILE = os.path.expanduser("~/.kyfw_12306_cookies.json")
+DEFAULT_QR_LOGIN_STATE_FILE = os.path.expanduser("~/.kyfw_12306_qr_login_state.json")
 SM4_KEY = "tiekeyuankp12306"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -481,6 +484,33 @@ def assert_ok(resp: dict[str, Any], field: str = "result_code") -> None:
         raise RuntimeError(f"Request failed ({field}={code}): {msg}")
 
 
+def derive_qr_login_state_file(cookie_file: str | None) -> Path:
+    if cookie_file:
+        base = Path(cookie_file).expanduser()
+        return base.with_name(base.name + ".qrlogin.json")
+    return Path(DEFAULT_QR_LOGIN_STATE_FILE).expanduser()
+
+
+def load_qr_login_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        return {}
+    return {}
+
+
+def save_qr_login_state(path: Path, payload: dict[str, Any]) -> None:
+    path = path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
 class KyfwClient:
     def __init__(
         self,
@@ -797,6 +827,125 @@ class KyfwClient:
             data={"appid": "otn", "username": username, "castNum": id_last4.upper()},
             referer="/otn/resources/login.html",
         )
+
+    def create_qr_login(self, *, appid: str = "otn") -> dict[str, Any]:
+        appid = (appid or "otn").strip() or "otn"
+        self.session.get(self._url("/otn/resources/login.html"), timeout=self.timeout)
+        resp = self._request(
+            "POST",
+            "/passport/web/create-qr64",
+            data={"appid": appid},
+            referer="/otn/resources/login.html",
+        )
+        code = str(resp.get("result_code", ""))
+        if code != "0":
+            raise RuntimeError(f"生成二维码失败(result_code={code}): {self._extract_error_message(resp)}")
+        uuid = str(resp.get("uuid") or "").strip()
+        image = str(resp.get("image") or "").strip()
+        if not uuid or not image:
+            raise RuntimeError(f"create-qr64 返回缺少 uuid/image: {resp}")
+        return {
+            "step": "qr_created",
+            "appid": appid,
+            "uuid": uuid,
+            "image": image,
+            "result_code": code,
+            "result_message": resp.get("result_message") or "",
+            "createQr64": resp,
+        }
+
+    def check_qr_login(
+        self,
+        *,
+        uuid: str,
+        appid: str = "otn",
+        finalize: bool = True,
+    ) -> dict[str, Any]:
+        uuid = (uuid or "").strip()
+        if not uuid:
+            raise ValueError("uuid 不能为空")
+        appid = (appid or "otn").strip() or "otn"
+
+        check_resp = self._request(
+            "POST",
+            "/passport/web/checkqr",
+            data={"uuid": uuid, "appid": appid},
+            referer="/otn/resources/login.html",
+        )
+        result_code = str(check_resp.get("result_code", ""))
+        result_message = str(check_resp.get("result_message") or "")
+        qr_status_map = {
+            "0": "waiting_scan",
+            "1": "waiting_confirm",
+            "2": "authorized",
+            "3": "expired",
+            "5": "error",
+        }
+        qr_status = qr_status_map.get(result_code, "unknown")
+        out: dict[str, Any] = {
+            "step": "checked",
+            "uuid": uuid,
+            "appid": appid,
+            "result_code": result_code,
+            "result_message": result_message,
+            "qr_status": qr_status,
+            "checkqr": check_resp,
+        }
+        if result_code != "2":
+            if result_code in {"0", "1"}:
+                out["step"] = "pending"
+            elif result_code == "3":
+                out["step"] = "expired"
+            elif result_code == "5":
+                out["step"] = "error"
+            else:
+                out["step"] = "unknown"
+            return out
+
+        if not finalize:
+            out["step"] = "authorized"
+            return out
+
+        # Match browser flow: authorized QR -> passport ticket -> uamtk -> uamauthclient.
+        self.session.get(
+            self._url("/otn/passport?redirect=/otn/login/userLogin"),
+            timeout=self.timeout,
+        )
+        uamtk_resp = self._request(
+            "POST",
+            "/passport/web/auth/uamtk",
+            data={"appid": appid},
+            referer="/otn/passport?redirect=/otn/login/userLogin",
+        )
+        uamtk_code = str(uamtk_resp.get("result_code", ""))
+        if uamtk_code != "0":
+            raise RuntimeError(
+                "扫码已确认，但 auth/uamtk 未通过: "
+                f"result_code={uamtk_code}, message={self._extract_error_message(uamtk_resp)}"
+            )
+        tk = uamtk_resp.get("newapptk") or uamtk_resp.get("apptk")
+        if not tk:
+            raise RuntimeError(f"auth/uamtk 返回中缺少 tk: {uamtk_resp}")
+
+        uamauth_resp = self._request(
+            "POST",
+            "/otn/uamauthclient",
+            data={"tk": tk},
+            referer="/otn/passport?redirect=/otn/login/userLogin",
+        )
+        assert_ok(uamauth_resp, "result_code")
+        login_status = self.check_login_status()
+        out.update(
+            {
+                "step": "logged_in",
+                "uamtk": uamtk_resp,
+                "uamauthclient": uamauth_resp,
+                "login_status": login_status,
+            }
+        )
+        if not login_status.get("logged_in"):
+            out["warning"] = "uamauthclient 已返回成功，但 conf/initMy12306Api 尚未确认登录态。"
+        return out
 
     def login(
         self,
@@ -2454,6 +2603,20 @@ def add_auth_args(
         parser.add_argument("--send-sms", action="store_true", help="仅发送短信验证码，不执行完整登录")
 
 
+def resolve_qr_state_path(args: argparse.Namespace) -> Path:
+    raw = getattr(args, "state_file", None)
+    if raw:
+        return Path(raw).expanduser()
+    return derive_qr_login_state_file(getattr(args, "cookie_file", None))
+
+
+def build_random_qr_image_path(*, use_tmp: bool = False) -> Path:
+    name = f"12306_qr_login_{uuidlib.uuid4().hex[:12]}.png"
+    if use_tmp:
+        return Path(tempfile.gettempdir()) / name
+    return Path(__file__).resolve().parent / name
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="12306 API CLI")
     parser.add_argument("--base-url", default=BASE_URL, help="12306 base URL")
@@ -2474,6 +2637,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     login_p = sub.add_parser("login", help="登录")
     add_auth_args(login_p, require_username=True, allow_send_sms=True)
+
+    qr_create_p = sub.add_parser("qr-login-create", help="生成二维码登录图片（不轮询）")
+    qr_create_p.add_argument("--appid", default="otn", help="二维码登录 appid（默认 otn）")
+    qr_create_p.add_argument(
+        "--qr-image-file",
+        help="二维码图片输出路径（不传则自动生成随机路径）",
+    )
+    qr_create_p.add_argument(
+        "--state-file",
+        help="二维码登录状态文件路径（默认从 --cookie-file 推导）",
+    )
+
+    qr_check_p = sub.add_parser("qr-login-check", help="检查二维码登录状态")
+    qr_check_p.add_argument("--uuid", help="二维码 uuid（不传则从 --state-file 读取）")
+    qr_check_p.add_argument("--appid", default="", help="二维码登录 appid（默认从状态文件读取或 otn）")
+    qr_check_p.add_argument(
+        "--state-file",
+        help="二维码登录状态文件路径（默认从 --cookie-file 推导）",
+    )
+    qr_check_p.add_argument(
+        "--no-finalize",
+        action="store_true",
+        help="仅检查扫码状态，不执行 auth/uamtk 与 uamauthclient",
+    )
 
     order_p = sub.add_parser("orders", help="查询用户车票")
     add_auth_args(order_p, require_username=False, allow_send_sms=False)
@@ -2636,6 +2823,119 @@ def main() -> int:
                     print(resp.get("message"))
                 else:
                     print("登录成功。")
+            return 0
+
+        if args.command == "qr-login-create":
+            result = client.create_qr_login(appid=args.appid)
+            image_b64 = str(result.get("image") or "").strip()
+            if not image_b64:
+                raise RuntimeError(f"create-qr64 返回缺少 image: {result}")
+            padding = "=" * (-len(image_b64) % 4)
+            image_bytes = base64.b64decode(image_b64 + padding)
+            requested_image_path = (args.qr_image_file or "").strip()
+            if requested_image_path:
+                image_path = Path(requested_image_path).expanduser()
+                image_path.parent.mkdir(parents=True, exist_ok=True)
+                image_path.write_bytes(image_bytes)
+            else:
+                image_path = build_random_qr_image_path(use_tmp=False)
+                try:
+                    image_path.parent.mkdir(parents=True, exist_ok=True)
+                    image_path.write_bytes(image_bytes)
+                except OSError:
+                    image_path = build_random_qr_image_path(use_tmp=True)
+                    image_path.parent.mkdir(parents=True, exist_ok=True)
+                    image_path.write_bytes(image_bytes)
+
+            state_path = resolve_qr_state_path(args)
+            state = {
+                "version": 1,
+                "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "uuid": result.get("uuid"),
+                "appid": result.get("appid"),
+                "qr_image_file": str(image_path),
+                "cookie_file": args.cookie_file,
+                "base_url": args.base_url,
+                "last_check": None,
+            }
+            save_qr_login_state(state_path, state)
+
+            if args.json:
+                out = dict(result)
+                out["qr_image_file"] = str(image_path)
+                out["state_file"] = str(state_path)
+                print(json.dumps(out, ensure_ascii=False, indent=2))
+            else:
+                print("二维码已生成。")
+                print("uuid:", result.get("uuid"))
+                print("二维码图片:", str(image_path))
+                print("状态文件:", str(state_path))
+                print("下一步：用 12306 App 扫码并确认后执行 qr-login-check。")
+            return 0
+
+        if args.command == "qr-login-check":
+            state_path = resolve_qr_state_path(args)
+            state = load_qr_login_state(state_path)
+            uuid = (args.uuid or state.get("uuid") or "").strip()
+            if not uuid:
+                raise RuntimeError("未提供 --uuid，且状态文件中不存在 uuid。请先执行 qr-login-create。")
+            appid = (args.appid or state.get("appid") or "otn").strip() or "otn"
+            result = client.check_qr_login(
+                uuid=uuid,
+                appid=appid,
+                finalize=not args.no_finalize,
+            )
+
+            state["uuid"] = uuid
+            state["appid"] = appid
+            state["last_check"] = {
+                "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "step": result.get("step"),
+                "result_code": result.get("result_code"),
+                "result_message": result.get("result_message"),
+                "qr_status": result.get("qr_status"),
+            }
+            if result.get("step") == "logged_in":
+                state["completed_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            save_qr_login_state(state_path, state)
+
+            if args.json:
+                out = dict(result)
+                out["state_file"] = str(state_path)
+                print(json.dumps(out, ensure_ascii=False, indent=2))
+            else:
+                step = result.get("step")
+                print("uuid:", uuid)
+                print("状态文件:", str(state_path))
+                if step == "pending":
+                    qr_status = result.get("qr_status")
+                    if qr_status == "waiting_scan":
+                        print("二维码状态: 未扫描")
+                    elif qr_status == "waiting_confirm":
+                        print("二维码状态: 已扫描，待 App 确认")
+                    else:
+                        print("二维码状态:", qr_status)
+                    print("结果消息:", result.get("result_message") or "--")
+                elif step == "expired":
+                    print("二维码状态: 已失效，请重新执行 qr-login-create。")
+                elif step == "authorized":
+                    print("二维码状态: 已确认授权。")
+                    print("已按 --no-finalize 跳过登录落地。")
+                elif step == "logged_in":
+                    print("登录成功。")
+                    login_status = result.get("login_status") or {}
+                    print("登录状态:", "已登录" if login_status.get("logged_in") else "未确认")
+                    user = login_status.get("user") if isinstance(login_status, dict) else None
+                    if isinstance(user, dict):
+                        name = user.get("name")
+                        username = user.get("username")
+                        if name:
+                            print("姓名:", name)
+                        if username:
+                            print("用户名:", username)
+                else:
+                    print("二维码状态:", result.get("qr_status") or "--")
+                    print("结果消息:", result.get("result_message") or "--")
             return 0
 
         if args.command == "status":

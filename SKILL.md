@@ -1,7 +1,7 @@
 ---
 name: 12306-train-assistant
-description: 12306 查询与订票辅助技能，支持余票查询、经停站查询、中转换乘、候补查询与提交/取消、登录状态检查、下单与支付链接获取；当用户提到火车票、高铁票、经停站、中转、候补或 12306 查票时触发。
-version: 0.3.0
+description: 12306 查询与订票辅助技能，支持余票查询、经停站查询、中转换乘、候补查询与提交/取消、登录状态检查、密码登录与二维码登录（异步生成/检查）、下单与支付链接获取；当用户提到火车票、高铁票、经停站、中转、候补或 12306 查票时触发。
+version: 0.4.0
 icon: 🚄
 ---
 
@@ -15,6 +15,7 @@ icon: 🚄
 - 中转换乘：`transfer-ticket`
 - 经停站：`route`（支持 `--train-code` 自动解析）
 - 登录态检查：`status`
+- 二维码登录：`qr-login-create` / `qr-login-check`
 - 候补管理：`candidate-queue` / `candidate-orders` / `candidate-submit` / `candidate-cancel`
 - 需要登录的操作：`passengers` / `orders` / `book` / `candidate-submit` / `candidate-cancel`
 - 支付参数获取：`payOrder/init` + `payOrder/paycheckNew`（由 `book` 自动触发）
@@ -71,6 +72,8 @@ python3 client.py status
 python3 client.py login --username <账号> --password <密码>
 python3 client.py login --username <账号> --id-last4 <证件后4位> --send-sms
 python3 client.py login --username <账号> --id-last4 <证件后4位> --sms-code <6位验证码>
+python3 client.py qr-login-create --qr-image-file ./12306_qr_login.png
+python3 client.py qr-login-check
 ```
 
 ### 示例 5：乘车人与订单
@@ -179,6 +182,23 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 ### `status` 登录状态检查
 
 无专属参数，仅使用全局参数。
+
+### `qr-login-create` 生成二维码登录图片（不轮询）
+
+| 参数 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `--appid` | 否 | `otn` | 二维码登录 appid |
+| `--qr-image-file` | 否 | 随机路径 | 二维码图片输出路径（不传则优先脚本目录，失败回退 tmp） |
+| `--state-file` | 否 | 从 `--cookie-file` 推导 | 二维码状态文件路径 |
+
+### `qr-login-check` 检查二维码登录状态
+
+| 参数 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `--uuid` | 否 | 从状态文件读取 | 二维码 uuid |
+| `--appid` | 否 | 从状态文件读取或 `otn` | 二维码登录 appid |
+| `--state-file` | 否 | 从 `--cookie-file` 推导 | 二维码状态文件路径 |
+| `--no-finalize` | 否 | 关闭 | 仅检查扫码状态，不执行登录落地 |
 
 ### `passengers` 乘车人查询
 
