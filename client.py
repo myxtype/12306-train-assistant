@@ -26,24 +26,43 @@ USER_AGENT = (
 SEAT_CODE_MAP: dict[str, str] = {
     "business": "9",
     "business_class": "9",
+    "商务座": "9",
     "特等座": "P",
     "special_class": "P",
+    "premier_class": "P",
     "first_class": "M",
     "一等座": "M",
+    "premium_first_class": "D",
+    "优选一等座": "D",
     "second_class": "O",
     "二等座": "O",
+    "second_class_compartment": "S",
+    "二等包座": "S",
+    "deluxe_soft_sleeper": "6",
+    "高级软卧": "6",
     "advanced_soft_sleeper": "A",
-    "高级软卧": "A",
+    "advanced_emu_sleeper": "A",
+    "高级动卧": "A",
     "soft_sleeper": "4",
     "软卧": "4",
+    "first_class_sleeper": "I",
+    "一等卧": "I",
     "dynamic_sleeper": "F",
     "动卧": "F",
     "hard_sleeper": "3",
     "硬卧": "3",
+    "second_class_sleeper": "J",
+    "二等卧": "J",
+    "soft_seat": "2",
+    "软座": "2",
     "hard_seat": "1",
     "硬座": "1",
-    "no_seat": "1",
-    "无座": "1",
+    "no_seat": "W",
+    "standing": "W",
+    "无座": "W",
+    "wz": "W",
+    "other": "H",
+    "其他": "H",
 }
 
 FK = [0xA3B1BAC6, 0x56AA3350, 0x677D9197, 0xB27022DC]
@@ -1289,15 +1308,20 @@ class KyfwClient:
     @classmethod
     def resolve_seat_code(cls, seat: str) -> str:
         raw = seat.strip()
-        if re.fullmatch(r"[A-Za-z0-9]", raw):
-            return raw.upper()
+        if re.fullmatch(r"[A-Za-z0-9]{1,2}", raw):
+            upper = raw.upper()
+            if upper == "WZ":
+                return "W"
+            return upper
         key = raw.lower()
         if key in SEAT_CODE_MAP:
             return SEAT_CODE_MAP[key]
         if raw in SEAT_CODE_MAP:
             return SEAT_CODE_MAP[raw]
         supported = ", ".join(sorted(k for k in SEAT_CODE_MAP if k.isascii()))
-        raise RuntimeError(f"不支持的席别: {seat}。可用示例: {supported}，或直接传席别代码(O/M/9/3/4/1)。")
+        raise RuntimeError(
+            f"不支持的席别: {seat}。可用示例: {supported}，或直接传席别代码(O/M/9/P/W/1/2/3/4/6/A/D/F/I/J/S/H)。"
+        )
 
     @staticmethod
     def _format_train_date_for_12306(date_value: dt.date) -> str:
