@@ -65,6 +65,26 @@ SEAT_CODE_MAP: dict[str, str] = {
     "other": "H",
     "其他": "H",
 }
+PRICE_KEY_LABEL_MAP: dict[str, str] = {
+    "9": "商务座",
+    "A9": "商务座/特等座",
+    "P": "特等座",
+    "D": "优选一等座",
+    "M": "一等座",
+    "O": "二等座",
+    "S": "二等包座",
+    "6": "高级软卧",
+    "A": "高级动卧",
+    "4": "软卧",
+    "F": "动卧",
+    "I": "一等卧",
+    "3": "硬卧",
+    "J": "二等卧",
+    "2": "软座",
+    "1": "硬座",
+    "W": "无座",
+    "WZ": "无座",
+}
 
 FK = [0xA3B1BAC6, 0x56AA3350, 0x677D9197, 0xB27022DC]
 CK = [
@@ -1057,6 +1077,8 @@ class KyfwClient:
         to_station: str,
         purpose_codes: str = "ADULT",
         endpoint: str = "queryG",
+        with_price: bool = False,
+        price_max_rows: int = 20,
     ) -> dict[str, Any]:
         dt.date.fromisoformat(train_date)
         from_code = self.station_to_code(from_station)
@@ -1080,37 +1102,62 @@ class KyfwClient:
         code_map = payload.get("map", {})
         rows = payload.get("result", [])
         parsed: list[dict[str, Any]] = []
-        for row in rows:
+        for row_idx, row in enumerate(rows):
             parts = row.split("|")
             if len(parts) < 33:
                 continue
-            parsed.append(
-                {
-                    "secret_str": parts[0],
-                    "train_no": parts[2],
-                    "train_code": parts[3],
-                    "from_station_code": parts[6],
-                    "to_station_code": parts[7],
-                    "from_station": code_map.get(parts[6], parts[6]),
-                    "to_station": code_map.get(parts[7], parts[7]),
-                    "start_time": parts[8],
-                    "arrive_time": parts[9],
-                    "duration": parts[10],
-                    "can_web_buy": parts[11],
-                    "yp_info": parts[12],
-                    "start_train_date": parts[13],
-                    "location_code": parts[15],
-                    "from_station_no": parts[16],
-                    "to_station_no": parts[17],
-                    "business": self._seat(parts, 32),
-                    "first_class": self._seat(parts, 31),
-                    "second_class": self._seat(parts, 30),
-                    "soft_sleeper": self._seat(parts, 23),
-                    "hard_sleeper": self._seat(parts, 28),
-                    "hard_seat": self._seat(parts, 29),
-                    "no_seat": self._seat(parts, 26),
-                }
-            )
+            item = {
+                "secret_str": parts[0],
+                "train_no": parts[2],
+                "train_code": parts[3],
+                "from_station_code": parts[6],
+                "to_station_code": parts[7],
+                "from_station": code_map.get(parts[6], parts[6]),
+                "to_station": code_map.get(parts[7], parts[7]),
+                "start_time": parts[8],
+                "arrive_time": parts[9],
+                "duration": parts[10],
+                "can_web_buy": parts[11],
+                "yp_info": parts[12],
+                "start_train_date": parts[13],
+                "location_code": parts[15],
+                "from_station_no": parts[16],
+                "to_station_no": parts[17],
+                "premium_first_class": self._seat(parts, 20),
+                "deluxe_soft_sleeper": self._seat(parts, 21),
+                "business": self._seat(parts, 32),
+                "special_class": self._seat(parts, 25),
+                "first_class": self._seat(parts, 31),
+                "second_class": self._seat(parts, 30),
+                "second_class_compartment": self._seat(parts, 27),
+                "soft_sleeper": self._seat(parts, 23),
+                "hard_sleeper": self._seat(parts, 28),
+                "soft_seat": self._seat(parts, 24),
+                "hard_seat": self._seat(parts, 29),
+                "no_seat": self._seat(parts, 26),
+                "seat_types": parts[35] if len(parts) > 35 else "",
+            }
+            if with_price and row_idx < max(0, price_max_rows):
+                train_no = str(item.get("train_no") or "")
+                from_station_no = str(item.get("from_station_no") or "")
+                to_station_no = str(item.get("to_station_no") or "")
+                seat_types = str(item.get("seat_types") or "")
+                if train_no and from_station_no and to_station_no and seat_types:
+                    try:
+                        price_resp = self.query_ticket_price(
+                            train_no=train_no,
+                            from_station_no=from_station_no,
+                            to_station_no=to_station_no,
+                            seat_types=seat_types,
+                            train_date=train_date,
+                        )
+                        price_data = price_resp.get("data") if isinstance(price_resp, dict) else None
+                        if isinstance(price_data, dict):
+                            item["ticket_price"] = price_data
+                            item["ticket_price_text"] = self._format_ticket_price(price_data)
+                    except Exception as e:  # noqa: BLE001
+                        item["ticket_price_error"] = str(e)
+            parsed.append(item)
         return {
             "query": {
                 "date": train_date,
@@ -1120,10 +1167,50 @@ class KyfwClient:
                 "to_code": to_code,
                 "endpoint": endpoint,
                 "purpose_codes": purpose_codes,
+                "with_price": with_price,
             },
             "rows": parsed,
             "raw": data,
         }
+
+    def query_ticket_price(
+        self,
+        *,
+        train_no: str,
+        from_station_no: str,
+        to_station_no: str,
+        seat_types: str,
+        train_date: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            "/otn/leftTicket/queryTicketPrice",
+            params={
+                "train_no": train_no,
+                "from_station_no": from_station_no,
+                "to_station_no": to_station_no,
+                "seat_types": seat_types,
+                "train_date": train_date,
+            },
+            referer="/otn/leftTicket/init",
+        )
+
+    @staticmethod
+    def _format_ticket_price(price_data: dict[str, Any]) -> str:
+        pairs: list[str] = []
+        for key, value in price_data.items():
+            if key in {"OT", "train_no"}:
+                continue
+            if key == "9" and "A9" in price_data:
+                continue
+            text = str(value or "").strip()
+            if not text:
+                continue
+            if not text.startswith("¥") and re.fullmatch(r"\d+", text):
+                text = f"¥{int(text) / 10:.1f}"
+            label = PRICE_KEY_LABEL_MAP.get(key, key)
+            pairs.append(f"{label}={text}")
+        return ", ".join(pairs)
 
     def query_transfer_ticket(
         self,
@@ -2086,7 +2173,7 @@ def print_candidate_orders(rows: list[dict[str, Any]], limit: int) -> None:
 
 def print_left_tickets(rows: list[dict[str, Any]], limit: int) -> None:
     print(f"共返回车次: {len(rows)}")
-    header = "车次   出发->到达   时长   商务 一等 二等 软卧 硬卧 硬座 无座"
+    header = "车次   出发->到达   时长   商务 特等 优一 一等 二等 包座 高软 软卧 硬卧 软座 硬座 无座"
     print(header)
     print("-" * len(header))
     for item in rows[:limit]:
@@ -2095,13 +2182,21 @@ def print_left_tickets(rows: list[dict[str, Any]], limit: int) -> None:
             f"{item['start_time']}-{item['arrive_time']} "
             f"{item['duration']:<5} "
             f"{item['business']:<3} "
+            f"{item['special_class']:<3} "
+            f"{item['premium_first_class']:<3} "
             f"{item['first_class']:<3} "
             f"{item['second_class']:<3} "
+            f"{item['second_class_compartment']:<3} "
+            f"{item['deluxe_soft_sleeper']:<3} "
             f"{item['soft_sleeper']:<3} "
             f"{item['hard_sleeper']:<3} "
+            f"{item['soft_seat']:<3} "
             f"{item['hard_seat']:<3} "
             f"{item['no_seat']:<3}"
         )
+        price_text = str(item.get("ticket_price_text") or "").strip()
+        if price_text:
+            print(f"      票价: {price_text}")
 
 
 def print_transfer_tickets(rows: list[dict[str, Any]], limit: int) -> None:
@@ -2229,6 +2324,7 @@ def build_parser() -> argparse.ArgumentParser:
     left_p.add_argument("--purpose", default="ADULT", help="乘客类型，默认 ADULT")
     left_p.add_argument("--endpoint", default="queryG", choices=["queryG", "queryZ"], help="余票接口类型")
     left_p.add_argument("--limit", type=int, default=20, help="最多展示多少行")
+    left_p.add_argument("--with-price", action="store_true", help="附带查询票价（会增加请求次数）")
 
     transfer_p = sub.add_parser("transfer-ticket", help="查询中转车票")
     transfer_p.add_argument("--date", required=True, help="出发日期 YYYY-MM-DD")
@@ -2430,6 +2526,8 @@ def main() -> int:
                 to_station=args.to_station,
                 purpose_codes=args.purpose,
                 endpoint=args.endpoint,
+                with_price=args.with_price,
+                price_max_rows=max(0, args.limit),
             )
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
