@@ -187,10 +187,6 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 | `--max-wait-seconds` | 否 | `30` | 排队轮询最长等待秒数 |
 | `--poll-interval` | 否 | `1.5` | 排队轮询间隔（秒） |
 | `--dry-run` | 否 | 关闭 | 只检查不提交最终确认 |
-| `--username` | 否 | 无 | cookie 失效时用于自动补登录 |
-| `--password` | 否 | 交互输入或 `KYFW_PASSWORD` | 自动补登录时使用 |
-| `--id-last4` | 否 | 无 | 自动补登录短信场景 |
-| `--sms-code` | 否 | 无 | 自动补登录短信场景 |
 
 ### `route` 经停站查询
 
@@ -236,10 +232,6 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 | 参数 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
 | `--limit` | 否 | `200` | 文本输出最多展示人数 |
-| `--username` | 否 | 无 | cookie 失效时可用于自动补登录 |
-| `--password` | 否 | 交互输入或 `KYFW_PASSWORD` | 自动补登录时使用 |
-| `--id-last4` | 否 | 无 | 自动补登录短信场景 |
-| `--sms-code` | 否 | 无 | 自动补登录短信场景 |
 
 ### `orders` 订单查询
 
@@ -252,19 +244,10 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 | `--page-size` | 否 | `8` | 每页条数 |
 | `--query-type` | 否 | `1` | 订单查询类型 |
 | `--train-name` | 否 | 空 | 可按车次过滤 |
-| `--username` | 否 | 无 | cookie 失效时用于自动补登录 |
-| `--password` | 否 | 交互输入或 `KYFW_PASSWORD` | 自动补登录时使用 |
-| `--id-last4` | 否 | 无 | 自动补登录短信场景 |
-| `--sms-code` | 否 | 无 | 自动补登录短信场景 |
 
 ### `candidate-queue` 候补排队状态
 
-| 参数 | 必填 | 默认值 | 说明 |
-|---|---|---|---|
-| `--username` | 否 | 无 | cookie 失效时用于自动补登录 |
-| `--password` | 否 | 交互输入或 `KYFW_PASSWORD` | 自动补登录时使用 |
-| `--id-last4` | 否 | 无 | 自动补登录短信场景 |
-| `--sms-code` | 否 | 无 | 自动补登录短信场景 |
+无专属参数，仅使用全局参数。
 
 ### `candidate-orders` 候补订单查询
 
@@ -275,10 +258,6 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 | `--start-date` | 否 | 今天 | 查询起始日期，`YYYY-MM-DD` |
 | `--end-date` | 否 | 起始日期+29天 | 查询结束日期，`YYYY-MM-DD` |
 | `--limit` | 否 | `20` | 文本输出最多展示条数 |
-| `--username` | 否 | 无 | cookie 失效时用于自动补登录 |
-| `--password` | 否 | 交互输入或 `KYFW_PASSWORD` | 自动补登录时使用 |
-| `--id-last4` | 否 | 无 | 自动补登录短信场景 |
-| `--sms-code` | 否 | 无 | 自动补登录短信场景 |
 
 ### `candidate-submit` 提交候补订单
 
@@ -292,20 +271,12 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 | `--purpose` | 否 | `ADULT` | 乘客类型 |
 | `--endpoint` | 否 | `queryG` | 余票接口类型 |
 | `--force` | 否 | 关闭 | 即使余票不是“无”也尝试提交候补 |
-| `--username` | 否 | 无 | cookie 失效时用于自动补登录 |
-| `--password` | 否 | 交互输入或 `KYFW_PASSWORD` | 自动补登录时使用 |
-| `--id-last4` | 否 | 无 | 自动补登录短信场景 |
-| `--sms-code` | 否 | 无 | 自动补登录短信场景 |
 
 ### `candidate-cancel` 取消候补订单
 
 | 参数 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
 | `--reserve-no` | 是 | 无 | 候补单号（reserve_no） |
-| `--username` | 否 | 无 | cookie 失效时用于自动补登录 |
-| `--password` | 否 | 交互输入或 `KYFW_PASSWORD` | 自动补登录时使用 |
-| `--id-last4` | 否 | 无 | 自动补登录短信场景 |
-| `--sms-code` | 否 | 无 | 自动补登录短信场景 |
 
 ### `book` 订票
 
@@ -323,10 +294,6 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 | `--max-wait-seconds` | 否 | `30` | 排队轮询最长等待秒数 |
 | `--poll-interval` | 否 | `1.5` | 排队轮询间隔（秒） |
 | `--dry-run` | 否 | 关闭 | 只检查不提交最终确认 |
-| `--username` | 否 | 无 | cookie 失效时用于自动补登录 |
-| `--password` | 否 | 交互输入或 `KYFW_PASSWORD` | 自动补登录时使用 |
-| `--id-last4` | 否 | 无 | 自动补登录短信场景 |
-| `--sms-code` | 否 | 无 | 自动补登录短信场景 |
 
 ## 参数提取规则
 

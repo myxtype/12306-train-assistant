@@ -632,15 +632,7 @@ class KyfwClient:
             return path
         return f"{self.base_url}{path}"
 
-    def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: dict[str, Any] | None = None,
-        data: dict[str, Any] | None = None,
-        referer: str | None = None,
-    ) -> dict[str, Any]:
+    def _build_request_headers(self, *, method: str, referer: str | None = None) -> dict[str, str]:
         headers: dict[str, str] = {}
         if self.browser_headers:
             headers.update(
@@ -655,29 +647,62 @@ class KyfwClient:
         if method.upper() == "POST":
             headers["Origin"] = self.base_url
             headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+        return headers
 
+    @staticmethod
+    def _raise_if_risk_control_redirect(resp: requests.Response) -> None:
+        if "error.html" in resp.url:
+            raise RuntimeError(
+                "12306 返回 error.html，通常是触发了风控或访问限制。"
+                "请在可访问 12306 的网络环境重试，或重新登录，或降低请求频率。"
+            )
+
+    def _send_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        referer: str | None = None,
+        expect_json: bool = True,
+    ) -> requests.Response:
         resp = self.session.request(
             method=method.upper(),
             url=self._url(path),
             params=params,
             data=data,
-            headers=headers,
+            headers=self._build_request_headers(method=method, referer=referer),
             timeout=self.timeout,
         )
         resp.raise_for_status()
-        content_type = resp.headers.get("Content-Type", "").lower()
-        body = resp.text or ""
-        if "html" in content_type and "<!doctype html" in body.lower():
-            final_url = resp.url
-            if "error.html" in final_url:
-                raise RuntimeError(
-                    "12306 返回 error.html，通常是触发了风控或访问限制。"
-                    "请在可访问 12306 的网络环境重试，或重新登录，或降低请求频率。"
-                )
-            raise RuntimeError(f"接口返回 HTML 页面而非 JSON: {final_url}")
-        parsed = parse_json_response(resp.text)
+        self._raise_if_risk_control_redirect(resp)
+        if expect_json:
+            content_type = resp.headers.get("Content-Type", "").lower()
+            body = resp.text or ""
+            if "html" in content_type and "<!doctype html" in body.lower():
+                raise RuntimeError(f"接口返回 HTML 页面而非 JSON: {resp.url}")
         self._save_cookies()
-        return parsed
+        return resp
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        referer: str | None = None,
+    ) -> dict[str, Any]:
+        resp = self._send_request(
+            method,
+            path,
+            params=params,
+            data=data,
+            referer=referer,
+            expect_json=True,
+        )
+        return parse_json_response(resp.text)
 
     def _request_text(
         self,
@@ -688,36 +713,14 @@ class KyfwClient:
         data: dict[str, Any] | None = None,
         referer: str | None = None,
     ) -> str:
-        headers: dict[str, str] = {}
-        if self.browser_headers:
-            headers.update(
-                {
-                    "Sec-Fetch-Site": "same-origin",
-                    "Sec-Fetch-Mode": "cors",
-                    "Sec-Fetch-Dest": "empty",
-                }
-            )
-        if referer:
-            headers["Referer"] = self._url(referer)
-        if method.upper() == "POST":
-            headers["Origin"] = self.base_url
-            headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
-        resp = self.session.request(
-            method=method.upper(),
-            url=self._url(path),
+        resp = self._send_request(
+            method,
+            path,
             params=params,
             data=data,
-            headers=headers,
-            timeout=self.timeout,
+            referer=referer,
+            expect_json=False,
         )
-        resp.raise_for_status()
-        final_url = resp.url
-        if "error.html" in final_url:
-            raise RuntimeError(
-                "12306 返回 error.html，通常是触发了风控或访问限制。"
-                "请在可访问 12306 的网络环境重试，或重新登录，或降低请求频率。"
-            )
-        self._save_cookies()
         return resp.text or ""
 
     @staticmethod
@@ -1104,8 +1107,7 @@ class KyfwClient:
             data={},
             referer="/otn/view/lineUp_order.html",
         )
-        if str(data.get("httpstatus", "200")) != "200" or data.get("status") is False:
-            raise RuntimeError(f"查询候补排队状态失败: {data}")
+        self._assert_request_ok(data, context="查询候补排队状态")
         payload = data.get("data")
         if not isinstance(payload, dict):
             raise RuntimeError(f"候补排队返回结构异常: {data}")
@@ -1147,8 +1149,7 @@ class KyfwClient:
             },
             referer="/otn/view/lineUp_order.html",
         )
-        if str(data.get("httpstatus", "200")) != "200" or data.get("status") is False:
-            raise RuntimeError(f"查询候补订单失败: {data}")
+        self._assert_request_ok(data, context="查询候补订单")
         payload = data.get("data")
         rows = payload.get("list") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
@@ -1215,6 +1216,43 @@ class KyfwClient:
             return str(result_message)
         return str(resp)
 
+    @staticmethod
+    def _is_request_ok(resp: Any, *, require_status: bool = True) -> bool:
+        if not isinstance(resp, dict):
+            return False
+        if str(resp.get("httpstatus", "200")) != "200":
+            return False
+        if require_status and resp.get("status") is False:
+            return False
+        return True
+
+    @classmethod
+    def _assert_request_ok(
+        cls,
+        resp: dict[str, Any],
+        *,
+        context: str,
+        require_status: bool = True,
+    ) -> None:
+        if not cls._is_request_ok(resp, require_status=require_status):
+            raise RuntimeError(f"{context} 失败: {resp}")
+
+    @staticmethod
+    def _assert_submit_status(resp: dict[str, Any], *, context: str) -> None:
+        data = resp.get("data") if isinstance(resp, dict) else None
+        if isinstance(data, dict) and data.get("submitStatus") is False:
+            raise RuntimeError(f"{context} 未通过: {resp}")
+
+    def _ensure_check_user(self) -> dict[str, Any]:
+        check_user_resp = self.check_user()
+        check_user_data = check_user_resp.get("data") if isinstance(check_user_resp, dict) else None
+        if (
+            not self._is_request_ok(check_user_resp, require_status=True)
+            or (isinstance(check_user_data, dict) and check_user_data.get("flag") is False)
+        ):
+            raise RuntimeError(f"checkUser 失败: {check_user_resp}")
+        return check_user_resp
+
     def submit_candidate_order(
         self,
         *,
@@ -1258,14 +1296,7 @@ class KyfwClient:
         if not secret_str:
             raise RuntimeError("余票数据中缺少 secret_str，无法提交候补。")
 
-        check_user_resp = self.check_user()
-        check_user_data = check_user_resp.get("data") if isinstance(check_user_resp, dict) else None
-        if (
-            str(check_user_resp.get("httpstatus", "200")) != "200"
-            or check_user_resp.get("status") is False
-            or (isinstance(check_user_data, dict) and check_user_data.get("flag") is False)
-        ):
-            raise RuntimeError(f"checkUser 失败: {check_user_resp}")
+        check_user_resp = self._ensure_check_user()
 
         secret_list = f"{secret_str}#{seat_cfg['hb_seat_code']}|"
         submit = self._request(
@@ -1433,8 +1464,7 @@ class KyfwClient:
             },
             referer="/otn/leftTicket/init",
         )
-        if str(data.get("httpstatus", "200")) != "200":
-            raise RuntimeError(f"查询余票失败: {data}")
+        self._assert_request_ok(data, context="查询余票", require_status=False)
         payload = data.get("data", {})
         code_map = payload.get("map", {})
         rows = payload.get("result", [])
@@ -1644,8 +1674,7 @@ class KyfwClient:
             },
             referer="/otn/lcQuery/init",
         )
-        if data.get("status") is False:
-            raise RuntimeError(f"查询中转车票失败: {data.get('errorMsg') or data}")
+        self._assert_request_ok(data, context="查询中转车票")
         payload = data.get("data")
         if not isinstance(payload, dict):
             raise RuntimeError(f"查询中转车票返回结构异常: {data}")
@@ -1753,8 +1782,7 @@ class KyfwClient:
             },
             referer="/otn/lcQuery/init",
         )
-        if str(data.get("httpstatus", "200")) != "200" or data.get("status") is False:
-            raise RuntimeError(f"查询经停站失败: {data}")
+        self._assert_request_ok(data, context="查询经停站")
 
         payload = data.get("data")
         rows = payload.get("data") if isinstance(payload, dict) else None
@@ -2233,8 +2261,7 @@ class KyfwClient:
                 tour_flag=tour_flag,
                 referer=referer,
             )
-            if str(resp.get("httpstatus", "200")) != "200" or resp.get("status") is False:
-                raise RuntimeError(f"轮询排队状态失败: {resp}")
+            self._assert_request_ok(resp, context="轮询排队状态")
             data = resp.get("data") if isinstance(resp, dict) else None
             order_id = None
             if isinstance(data, dict):
@@ -2642,15 +2669,7 @@ class KyfwClient:
         )
         choose_seats = self._build_lc_choose_seats(legs)
 
-        check_user_resp = self.check_user()
-        check_user_data = check_user_resp.get("data") if isinstance(check_user_resp, dict) else None
-        check_user_ok = (
-            str(check_user_resp.get("httpstatus", "200")) == "200"
-            and check_user_resp.get("status") is not False
-            and (not isinstance(check_user_data, dict) or check_user_data.get("flag") is not False)
-        )
-        if not check_user_ok:
-            raise RuntimeError(f"checkUser 失败: {check_user_resp}")
+        check_user_resp = self._ensure_check_user()
 
         submit = self.submit_lc_order_request(
             secret_str=scretstr,
@@ -2658,8 +2677,7 @@ class KyfwClient:
             to_station_name=str(selected_raw.get("end_station_name") or to_station),
             purpose_codes="ADULT",
         )
-        if str(submit.get("httpstatus", "200")) != "200" or submit.get("status") is False:
-            raise RuntimeError(f"lc submitOrderRequest 失败: {submit}")
+        self._assert_request_ok(submit, context="lc submitOrderRequest")
 
         init_context = self.init_lc_context()
         repeat_submit_token = init_context["repeat_submit_token"]
@@ -2675,18 +2693,14 @@ class KyfwClient:
             passenger_ticket_str=passenger_ticket_str,
             old_passenger_str=old_passenger_str,
         )
-        check_data = check_order.get("data") if isinstance(check_order, dict) else None
-        if str(check_order.get("httpstatus", "200")) != "200" or check_order.get("status") is False:
-            raise RuntimeError(f"lc checkOrderInfo 失败: {check_order}")
-        if isinstance(check_data, dict) and check_data.get("submitStatus") is False:
-            raise RuntimeError(f"lc checkOrderInfo 未通过: {check_order}")
+        self._assert_request_ok(check_order, context="lc checkOrderInfo")
+        self._assert_submit_status(check_order, context="lc checkOrderInfo")
 
         queue_count = self.get_lc_queue_count(
             repeat_submit_token=repeat_submit_token,
             data_str=queue_data_str,
         )
-        if str(queue_count.get("httpstatus", "200")) != "200" or queue_count.get("status") is False:
-            raise RuntimeError(f"lc getQueueCount 失败: {queue_count}")
+        self._assert_request_ok(queue_count, context="lc getQueueCount")
         if dry_run:
             return {
                 "step": "checked",
@@ -2716,11 +2730,8 @@ class KyfwClient:
             train_location=legs[0]["train_location"],
             choose_seats=choose_seats,
         )
-        confirm_data = confirm.get("data") if isinstance(confirm, dict) else None
-        if str(confirm.get("httpstatus", "200")) != "200" or confirm.get("status") is False:
-            raise RuntimeError(f"confirmLCForQueue 失败: {confirm}")
-        if isinstance(confirm_data, dict) and confirm_data.get("submitStatus") is False:
-            raise RuntimeError(f"confirmLCForQueue 未通过: {confirm}")
+        self._assert_request_ok(confirm, context="confirmLCForQueue")
+        self._assert_submit_status(confirm, context="confirmLCForQueue")
         try:
             confirm_log = self.report_confirm_log(
                 repeat_submit_token=repeat_submit_token,
@@ -2789,15 +2800,7 @@ class KyfwClient:
         if not secret_str:
             raise RuntimeError("余票数据中缺少 secret_str，无法提交预订请求。")
 
-        check_user_resp = self.check_user()
-        check_user_data = check_user_resp.get("data") if isinstance(check_user_resp, dict) else None
-        check_user_ok = (
-            str(check_user_resp.get("httpstatus", "200")) == "200"
-            and check_user_resp.get("status") is not False
-            and (not isinstance(check_user_data, dict) or check_user_data.get("flag") is not False)
-        )
-        if not check_user_ok:
-            raise RuntimeError(f"checkUser 失败: {check_user_resp}")
+        check_user_resp = self._ensure_check_user()
 
         submit_back_date = dt.date.today().isoformat()
         submit_from_station_name = str(train_row.get("from_station") or from_station)
@@ -2820,8 +2823,7 @@ class KyfwClient:
             },
             referer="/otn/leftTicket/init",
         )
-        if str(submit.get("httpstatus", "200")) != "200" or submit.get("status") is False:
-            raise RuntimeError(f"submitOrderRequest 失败: {submit}")
+        self._assert_request_ok(submit, context="submitOrderRequest")
 
         init_context = self.init_dc_context()
         repeat_submit_token = init_context["repeat_submit_token"]
@@ -2835,11 +2837,8 @@ class KyfwClient:
             passenger_ticket_str=passenger_ticket_str,
             old_passenger_str=old_passenger_str,
         )
-        check_data = check_order.get("data") if isinstance(check_order, dict) else None
-        if str(check_order.get("httpstatus", "200")) != "200" or check_order.get("status") is False:
-            raise RuntimeError(f"checkOrderInfo 失败: {check_order}")
-        if isinstance(check_data, dict) and check_data.get("submitStatus") is False:
-            raise RuntimeError(f"checkOrderInfo 未通过: {check_order}")
+        self._assert_request_ok(check_order, context="checkOrderInfo")
+        self._assert_submit_status(check_order, context="checkOrderInfo")
 
         queue_count = self.get_queue_count(
             repeat_submit_token=repeat_submit_token,
@@ -2850,8 +2849,7 @@ class KyfwClient:
             train_location=init_context["train_location"],
             purpose_codes=init_context.get("purpose_codes") or purpose_codes,
         )
-        if str(queue_count.get("httpstatus", "200")) != "200" or queue_count.get("status") is False:
-            raise RuntimeError(f"getQueueCount 失败: {queue_count}")
+        self._assert_request_ok(queue_count, context="getQueueCount")
         if dry_run:
             return {
                 "step": "checked",
@@ -2874,11 +2872,8 @@ class KyfwClient:
             train_location=init_context["train_location"],
             choose_seats=normalized_choose_seats,
         )
-        confirm_data = confirm.get("data") if isinstance(confirm, dict) else None
-        if str(confirm.get("httpstatus", "200")) != "200" or confirm.get("status") is False:
-            raise RuntimeError(f"confirmSingleForQueue 失败: {confirm}")
-        if isinstance(confirm_data, dict) and confirm_data.get("submitStatus") is False:
-            raise RuntimeError(f"confirmSingleForQueue 未通过: {confirm}")
+        self._assert_request_ok(confirm, context="confirmSingleForQueue")
+        self._assert_submit_status(confirm, context="confirmSingleForQueue")
         try:
             confirm_log = self.report_confirm_log(repeat_submit_token=repeat_submit_token)
         except Exception as e:  # noqa: BLE001
@@ -2894,18 +2889,14 @@ class KyfwClient:
             repeat_submit_token=repeat_submit_token,
             order_id=order_id,
         )
-        result_data = result_order.get("data") if isinstance(result_order, dict) else None
-        if str(result_order.get("httpstatus", "200")) != "200" or result_order.get("status") is False:
-            raise RuntimeError(f"resultOrderForDcQueue 失败: {result_order}")
-        if isinstance(result_data, dict) and result_data.get("submitStatus") is False:
-            raise RuntimeError(f"resultOrderForDcQueue 未通过: {result_order}")
+        self._assert_request_ok(result_order, context="resultOrderForDcQueue")
+        self._assert_submit_status(result_order, context="resultOrderForDcQueue")
 
         payment: dict[str, Any]
         try:
             init_random = self.init_pay_order()
             pay_check_new_resp = self.pay_check_new(init_random=init_random)
-            if str(pay_check_new_resp.get("httpstatus", "200")) != "200" or pay_check_new_resp.get("status") is False:
-                raise RuntimeError(f"paycheckNew 失败: {pay_check_new_resp}")
+            self._assert_request_ok(pay_check_new_resp, context="paycheckNew")
             pay_data = pay_check_new_resp.get("data") if isinstance(pay_check_new_resp, dict) else None
             if isinstance(pay_data, dict) and pay_data.get("flag") is False:
                 raise RuntimeError(f"paycheckNew 返回 flag=false: {pay_check_new_resp}")
@@ -3174,7 +3165,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("qr-login-check", help="检查二维码登录状态（固定1秒轮询，持续等待）")
 
     order_p = sub.add_parser("orders", help="查询用户车票")
-    add_auth_args(order_p, require_username=False, allow_send_sms=False)
     order_p.add_argument("--where", default="G", choices=["G", "H"], help="G:未出行/近期, H:历史订单")
     order_p.add_argument("--start-date", help="查询起始日期, YYYY-MM-DD")
     order_p.add_argument("--end-date", help="查询结束日期, YYYY-MM-DD")
@@ -3184,10 +3174,8 @@ def build_parser() -> argparse.ArgumentParser:
     order_p.add_argument("--train-name", default="", help="按车次过滤（可选）")
 
     candidate_queue_p = sub.add_parser("candidate-queue", help="查询候补排队状态")
-    add_auth_args(candidate_queue_p, require_username=False, allow_send_sms=False)
 
     candidate_orders_p = sub.add_parser("candidate-orders", help="查询候补订单")
-    add_auth_args(candidate_orders_p, require_username=False, allow_send_sms=False)
     candidate_orders_p.add_argument(
         "--processed",
         action="store_true",
@@ -3199,7 +3187,6 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_orders_p.add_argument("--limit", type=int, default=20, help="最多展示多少条候补订单")
 
     candidate_submit_p = sub.add_parser("candidate-submit", help="提交候补订单")
-    add_auth_args(candidate_submit_p, require_username=False, allow_send_sms=False)
     candidate_submit_p.add_argument("--date", required=True, help="出发日期 YYYY-MM-DD")
     candidate_submit_p.add_argument("--from", dest="from_station", required=True, help="出发站（中文名/拼音/三字码）")
     candidate_submit_p.add_argument("--to", dest="to_station", required=True, help="到达站（中文名/拼音/三字码）")
@@ -3219,7 +3206,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     candidate_cancel_p = sub.add_parser("candidate-cancel", help="取消候补订单")
-    add_auth_args(candidate_cancel_p, require_username=False, allow_send_sms=False)
     candidate_cancel_p.add_argument("--reserve-no", required=True, help="候补单号（reserve_no）")
 
     left_p = sub.add_parser("left-ticket", help="查询车次余票")
@@ -3244,7 +3230,6 @@ def build_parser() -> argparse.ArgumentParser:
     transfer_p.add_argument("--limit", type=int, default=20, help="最多展示多少行")
 
     transfer_book_p = sub.add_parser("transfer-book", help="提交中转订单（按中转方案下单）")
-    add_auth_args(transfer_book_p, require_username=False, allow_send_sms=False)
     transfer_book_p.add_argument("--date", required=True, help="出发日期 YYYY-MM-DD")
     transfer_book_p.add_argument("--from", dest="from_station", required=True, help="出发站（中文名/拼音/三字码）")
     transfer_book_p.add_argument("--to", dest="to_station", required=True, help="到达站（中文名/拼音/三字码）")
@@ -3279,7 +3264,6 @@ def build_parser() -> argparse.ArgumentParser:
     route_p.add_argument("--limit", type=int, default=200, help="最多展示多少站")
 
     book_p = sub.add_parser("book", help="订票（提交订单）")
-    add_auth_args(book_p, require_username=False, allow_send_sms=False)
     book_p.add_argument("--date", required=True, help="出发日期 YYYY-MM-DD")
     book_p.add_argument("--from", dest="from_station", required=True, help="出发站（中文名/拼音/三字码）")
     book_p.add_argument("--to", dest="to_station", required=True, help="到达站（中文名/拼音/三字码）")
@@ -3298,7 +3282,6 @@ def build_parser() -> argparse.ArgumentParser:
     book_p.add_argument("--dry-run", action="store_true", help="只走到排队前检查，不执行最终提交")
 
     passenger_p = sub.add_parser("passengers", help="查询当前账号乘车人信息")
-    add_auth_args(passenger_p, require_username=False, allow_send_sms=False)
     passenger_p.add_argument("--limit", type=int, default=200, help="最多展示多少个乘车人")
 
     sub.add_parser("status", help="查询当前是否已登录（基于 cookie）")
@@ -3306,25 +3289,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def ensure_logged_in(client: KyfwClient, args: argparse.Namespace) -> None:
+def ensure_logged_in(client: KyfwClient) -> None:
     status = client.check_login_status()
     if status.get("logged_in"):
         return
-    if not getattr(args, "username", None):
-        raise RuntimeError(
-            "当前 cookie 未登录或已失效。请提供 --username 并重新登录，"
-            "或先执行 login 命令更新 cookie。"
-        )
-    password = read_password(args)
-    login_resp = client.login(
-        username=args.username,
-        password=password,
-        id_last4=getattr(args, "id_last4", None),
-        sms_code=getattr(args, "sms_code", None),
-        send_sms=False,
+    raise RuntimeError(
+        "当前 cookie 未登录或已失效。请先执行 login（或二维码登录）更新 cookie 后重试。"
     )
-    if login_resp.get("step") != "logged_in":
-        raise RuntimeError("登录未完成，请确认短信验证码参数。")
 
 
 def main() -> int:
@@ -3498,7 +3469,7 @@ def main() -> int:
             return 0
 
         if args.command == "passengers":
-            ensure_logged_in(client, args)
+            ensure_logged_in(client)
             result = client.query_passengers()
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -3511,7 +3482,7 @@ def main() -> int:
             return 0
 
         if args.command == "orders":
-            ensure_logged_in(client, args)
+            ensure_logged_in(client)
 
             no_complete = client.query_my_order_no_complete()
             orders = client.query_my_order(
@@ -3532,7 +3503,7 @@ def main() -> int:
             return 0
 
         if args.command == "candidate-queue":
-            ensure_logged_in(client, args)
+            ensure_logged_in(client)
             result = client.query_candidate_queue()
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -3541,7 +3512,7 @@ def main() -> int:
             return 0
 
         if args.command == "candidate-orders":
-            ensure_logged_in(client, args)
+            ensure_logged_in(client)
             result = client.query_candidate_orders(
                 processed=args.processed,
                 page_no=args.page_no,
@@ -3560,7 +3531,7 @@ def main() -> int:
             return 0
 
         if args.command == "candidate-submit":
-            ensure_logged_in(client, args)
+            ensure_logged_in(client)
             result = client.submit_candidate_order(
                 train_date=args.date,
                 from_station=args.from_station,
@@ -3593,7 +3564,7 @@ def main() -> int:
             return 0
 
         if args.command == "candidate-cancel":
-            ensure_logged_in(client, args)
+            ensure_logged_in(client)
             result = client.cancel_candidate_order(reserve_no=args.reserve_no)
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -3653,7 +3624,7 @@ def main() -> int:
             return 0
 
         if args.command == "transfer-book":
-            ensure_logged_in(client, args)
+            ensure_logged_in(client)
             passenger_names = [name.strip() for name in args.passengers.split(",") if name.strip()]
             if not passenger_names:
                 raise RuntimeError("--passengers 至少包含一个乘客姓名。")
@@ -3736,7 +3707,7 @@ def main() -> int:
             return 0
 
         if args.command == "book":
-            ensure_logged_in(client, args)
+            ensure_logged_in(client)
             passenger_names = [name.strip() for name in args.passengers.split(",") if name.strip()]
             if not passenger_names:
                 raise RuntimeError("--passengers 至少包含一个乘客姓名。")

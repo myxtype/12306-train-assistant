@@ -49,6 +49,8 @@ python3 client.py qr-login-check -h
 
 ## 常用命令
 
+说明：除 `login` 外，其他需要登录态的命令不再支持通过 `--username/--password` 自动补登录。若未登录，请先执行 `login` 或二维码登录更新 cookie。
+
 ### 1) 登录
 
 先发短信验证码：
@@ -188,7 +190,7 @@ python3 client.py orders --where G
 - `--where G`：未出行/近期
 - `--where H`：历史订单
 
-若 cookie 未登录，可额外提供 `--username`（及必要时的登录参数）自动补登录。
+若 cookie 未登录或失效，请先执行 `login`（或二维码登录）更新 cookie 后再查询。
 
 ### 8) 候补相关（查询 / 提交 / 取消）
 
@@ -240,7 +242,7 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 说明：
 
 - 候补命令需要登录态（可沿用已有 cookie）。
-- 若 cookie 失效，可额外传 `--username`（及必要时登录参数）自动补登录。
+- 若 cookie 失效，请先执行 `login`（或二维码登录）更新 cookie 后再重试。
 
 ### 9) 订票
 
