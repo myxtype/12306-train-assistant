@@ -1533,28 +1533,6 @@ class KyfwClient:
             "raw": data,
         }
 
-    def query_ticket_price(
-        self,
-        *,
-        train_no: str,
-        from_station_no: str,
-        to_station_no: str,
-        seat_types: str,
-        train_date: str,
-    ) -> dict[str, Any]:
-        return self._request(
-            "GET",
-            "/otn/leftTicket/queryTicketPrice",
-            params={
-                "train_no": train_no,
-                "from_station_no": from_station_no,
-                "to_station_no": to_station_no,
-                "seat_types": seat_types,
-                "train_date": train_date,
-            },
-            referer="/otn/leftTicket/init",
-        )
-
     @staticmethod
     def _format_ticket_price(price_data: dict[str, Any]) -> str:
         pairs: list[str] = []
