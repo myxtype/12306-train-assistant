@@ -3109,11 +3109,8 @@ def add_auth_args(
         parser.add_argument("--send-sms", action="store_true", help="仅发送短信验证码，不执行完整登录")
 
 
-def resolve_qr_state_path(args: argparse.Namespace) -> Path:
-    raw = getattr(args, "state_file", None)
-    if raw:
-        return Path(raw).expanduser()
-    return derive_qr_login_state_file(getattr(args, "cookie_file", None))
+def resolve_qr_state_path(cookie_file: str | None) -> Path:
+    return derive_qr_login_state_file(cookie_file)
 
 
 def build_random_qr_image_path(*, use_tmp: bool = False) -> Path:
@@ -3173,14 +3170,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     qr_create_p = sub.add_parser("qr-login-create", help="生成二维码登录图片（不轮询）")
     qr_create_p.add_argument("--appid", default="otn", help="二维码登录 appid（默认 otn）")
-    qr_create_p.add_argument(
-        "--qr-image-file",
-        help="二维码图片输出路径（不传则自动生成随机路径）",
-    )
-    qr_create_p.add_argument(
-        "--state-file",
-        help="二维码登录状态文件路径（默认从 --cookie-file 推导）",
-    )
 
     sub.add_parser("qr-login-check", help="检查二维码登录状态（固定1秒轮询，持续等待）")
 
@@ -3372,16 +3361,9 @@ def main() -> int:
 
         if args.command == "qr-login-create":
             result = client.create_qr_login(appid=args.appid)
-            requested_image_path = (args.qr_image_file or "").strip()
-            if requested_image_path:
-                image_path = write_qr_image_file(
-                    str(result.get("image") or ""),
-                    preferred_path=Path(requested_image_path),
-                )
-            else:
-                image_path = write_qr_image_file(str(result.get("image") or ""))
+            image_path = write_qr_image_file(str(result.get("image") or ""))
 
-            state_path = resolve_qr_state_path(args)
+            state_path = resolve_qr_state_path(args.cookie_file)
             state = {
                 "version": 1,
                 "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -3400,6 +3382,7 @@ def main() -> int:
                     "result_message": result.get("result_message"),
                     "qr_image_file": str(image_path),
                     "next_action": "立即用类似 nohup 的后台方式执行: nohup python3 client.py qr-login-check > /dev/null 2>&1 &",
+                    "confirm_login_action": "扫码确认后执行: python3 client.py status",
                 }
                 print(json.dumps(out, ensure_ascii=False, indent=2))
             else:
@@ -3408,10 +3391,12 @@ def main() -> int:
                 print("立即用类似 nohup 的后台方式执行以下命令持续检查：")
                 print("  nohup python3 client.py qr-login-check > /dev/null 2>&1 &")
                 print("然后再让用户用 12306 App 扫码并确认。")
+                print("扫码确认后可执行以下命令确认是否登录成功：")
+                print("  python3 client.py status")
             return 0
 
         if args.command == "qr-login-check":
-            state_path = resolve_qr_state_path(args)
+            state_path = resolve_qr_state_path(args.cookie_file)
             state = load_qr_login_state(state_path)
             uuid = str(state.get("uuid") or "").strip()
             if not uuid:
