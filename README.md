@@ -384,7 +384,7 @@ python3 client.py transfer-book \
 
 - `--base-url`：默认 `https://kyfw.12306.cn`
 - `--timeout`：请求超时（秒）
-- `--cookie-file`：cookie 持久化路径（默认 `~/.kyfw_12306_cookies.json`）
+- `--cookie-file`：cookie 持久化路径（默认 `client.py` 同目录下的 `cache/kyfw_12306_cookies.json`）
 - `--no-browser-headers`：关闭浏览器风格请求头仿真（默认开启）
 - `--json`：输出原始 JSON
 
@@ -408,4 +408,5 @@ python3 client.py transfer-book \
 - 12306 风控较严格，可能出现 `error.html`、排队超时、或需要额外校验。
 - 部分账号可能触发滑块/图片验证码（脚本当前不自动处理该场景）。
 - 即使成功返回支付参数，网页侧也可能无法完成支付；请优先在 12306 App 的待支付订单中支付。
+- 车站字典（`station_to_code`）会本地缓存 3 天（`client.py` 同目录下的 `cache/kyfw_12306_station_index.json`），过期后自动刷新。
 - 本工具仅供学习与自动化辅助，请遵守 12306 平台规则并控制请求频率。

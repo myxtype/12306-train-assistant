@@ -21,8 +21,12 @@ from urllib.parse import unquote, urlencode, urljoin
 import requests
 
 BASE_URL = "https://kyfw.12306.cn"
-DEFAULT_COOKIE_FILE = os.path.expanduser("~/.kyfw_12306_cookies.json")
-DEFAULT_QR_LOGIN_STATE_FILE = os.path.expanduser("~/.kyfw_12306_qr_login_state.json")
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_CACHE_DIR = SCRIPT_DIR / "cache"
+DEFAULT_COOKIE_FILE = str(DEFAULT_CACHE_DIR / "kyfw_12306_cookies.json")
+DEFAULT_QR_LOGIN_STATE_FILE = str(DEFAULT_CACHE_DIR / "kyfw_12306_qr_login_state.json")
+DEFAULT_STATION_CACHE_FILE = str(DEFAULT_CACHE_DIR / "kyfw_12306_station_index.json")
+STATION_CACHE_TTL_SECONDS = 3 * 24 * 60 * 60
 SM4_KEY = "tiekeyuankp12306"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -557,6 +561,8 @@ class KyfwClient:
             )
         self.session.headers.update(session_headers)
         self._station_index: dict[str, str] | None = None
+        self._station_cache_file = Path(DEFAULT_STATION_CACHE_FILE).expanduser()
+        self._station_cache_ttl_seconds = STATION_CACHE_TTL_SECONDS
         self._load_cookies()
 
     def _load_cookies(self) -> None:
@@ -1817,32 +1823,77 @@ class KyfwClient:
     def _load_station_index(self) -> dict[str, str]:
         if self._station_index is not None:
             return self._station_index
-        url = self._url("/otn/resources/js/framework/station_name.js")
-        text = self.session.get(url, timeout=self.timeout).text
-        match = re.search(r"var\s+station_names\s*=\s*'([^']+)'", text)
-        if not match:
-            raise RuntimeError("解析 station_name.js 失败")
-        raw = match.group(1).strip("@")
+        now = int(time.time())
+        cached_index: dict[str, str] | None = None
+        cached_fetched_at = 0
+        try:
+            if self._station_cache_file.exists():
+                payload = json.loads(self._station_cache_file.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    fetched_at_raw = payload.get("fetched_at")
+                    if isinstance(fetched_at_raw, (int, float, str)):
+                        try:
+                            cached_fetched_at = int(float(fetched_at_raw))
+                        except Exception:
+                            cached_fetched_at = 0
+                    raw_index = payload.get("index")
+                    if isinstance(raw_index, dict):
+                        parsed_cache = {str(k): str(v) for k, v in raw_index.items() if str(k).strip()}
+                        if parsed_cache:
+                            cached_index = parsed_cache
+        except Exception:
+            cached_index = None
+            cached_fetched_at = 0
 
-        index: dict[str, str] = {}
-        for row in raw.split("@"):
-            parts = row.split("|")
-            if len(parts) < 3:
-                continue
-            station_name = parts[1]
-            telecode = parts[2].upper()
-            pinyin = parts[3] if len(parts) > 3 else ""
-            short = parts[4] if len(parts) > 4 else ""
-            index[station_name] = telecode
-            index[station_name.lower()] = telecode
-            if pinyin:
-                index[pinyin.lower()] = telecode
-            if short:
-                index[short.lower()] = telecode
-            index[telecode] = telecode
-            index[telecode.lower()] = telecode
-        self._station_index = index
-        return index
+        if (
+            cached_index
+            and cached_fetched_at > 0
+            and now - cached_fetched_at <= self._station_cache_ttl_seconds
+        ):
+            self._station_index = cached_index
+            return cached_index
+
+        try:
+            url = self._url("/otn/resources/js/framework/station_name.js")
+            text = self.session.get(url, timeout=self.timeout).text
+            match = re.search(r"var\s+station_names\s*=\s*'([^']+)'", text)
+            if not match:
+                raise RuntimeError("解析 station_name.js 失败")
+            raw = match.group(1).strip("@")
+
+            index: dict[str, str] = {}
+            for row in raw.split("@"):
+                parts = row.split("|")
+                if len(parts) < 3:
+                    continue
+                station_name = parts[1]
+                telecode = parts[2].upper()
+                pinyin = parts[3] if len(parts) > 3 else ""
+                short = parts[4] if len(parts) > 4 else ""
+                index[station_name] = telecode
+                index[station_name.lower()] = telecode
+                if pinyin:
+                    index[pinyin.lower()] = telecode
+                if short:
+                    index[short.lower()] = telecode
+                index[telecode] = telecode
+                index[telecode.lower()] = telecode
+            self._station_index = index
+            try:
+                self._station_cache_file.parent.mkdir(parents=True, exist_ok=True)
+                payload = {"fetched_at": now, "index": index}
+                self._station_cache_file.write_text(
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+            return index
+        except Exception:
+            if cached_index:
+                self._station_index = cached_index
+                return cached_index
+            raise
 
     def station_to_code(self, station: str) -> str:
         if re.fullmatch(r"[A-Za-z]{3}", station.strip()):
