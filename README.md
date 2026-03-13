@@ -41,6 +41,7 @@ python3 client.py -h
 python3 client.py book -h
 python3 client.py transfer-ticket -h
 python3 client.py transfer-book -h
+python3 client.py order-pay -h
 python3 client.py route -h
 python3 client.py candidate-orders -h
 python3 client.py candidate-submit -h
@@ -245,7 +246,7 @@ python3 client.py candidate-pay --reserve-no <候补单号>
 直接生成可浏览器打开的支付链接（GET）：
 
 ```bash
-python3 client.py candidate-pay --channel alipay
+python3 client.py candidate-pay --pay-channel alipay
 ```
 
 可选参数：
@@ -261,7 +262,7 @@ python3 client.py candidate-pay --channel alipay
 - `candidate-submit --poll-interval`（候补排队轮询间隔秒数，默认 `1.0`）
 - `candidate-cancel --reserve-no`（候补单号）
 - `candidate-pay --reserve-no`（候补单号；不传则尝试从 `candidate-queue` 自动读取）
-- `candidate-pay --channel`（`alipay`/`wechat`/`unionpay`，直接生成第三方 GET 支付链接）
+- `candidate-pay --pay-channel`（`alipay`/`wechat`/`unionpay`，直接生成第三方 GET 支付链接）
 
 说明：
 
@@ -269,9 +270,21 @@ python3 client.py candidate-pay --channel alipay
 - 若 cookie 失效，请先执行 `login`（或二维码登录）更新 cookie 后再重试。
 - `candidate-submit` 会继续执行候补确认与排队查询；若超时会返回“仍在排队中”，可继续用 `candidate-orders`/`candidate-queue` 查看。
 - `candidate-pay` 默认输出支付网关 POST 参数（`epay.12306.cn/pay/payGateway`）。
-- 若用户侧仅支持浏览器 GET 打开链接，使用 `candidate-pay --channel alipay|wechat|unionpay` 可直接返回第三方支付链接。
-- `candidate-pay --channel` 会额外本地生成支付二维码图片（不调用在线二维码服务，优先写入系统 `tmp` 目录，失败时回退到项目目录），便于用户扫码支付。
+- 若用户侧仅支持浏览器 GET 打开链接，使用 `candidate-pay --pay-channel alipay|wechat|unionpay` 可直接返回第三方支付链接。
+- `candidate-pay --pay-channel` 会额外本地生成支付二维码图片（不调用在线二维码服务，优先写入系统 `tmp` 目录，失败时回退到项目目录），便于用户扫码支付。
 - 本地生成二维码依赖 `qrcode` 或 `segno`（示例：`pip install qrcode[pil]`）。
+
+订单支付信息（不下单）：
+
+```bash
+python3 client.py order-pay
+python3 client.py order-pay --pay-channel alipay
+```
+
+说明：
+
+- `order-pay` 同时适用于普通订单和中转订单，底层都是同一套普通订单支付链路（`payOrder/init + payOrder/paycheckNew`）。
+- 传 `--pay-channel` 后可解析渠道跳转链接并本地生成支付二维码。
 
 ### 9) 订票
 
@@ -300,38 +313,11 @@ python3 client.py book \
   --passengers 张三
 ```
 
-按支付渠道生成本地支付二维码（中转订单）：
-
-```bash
-python3 client.py transfer-book \
-  --date 2026-03-23 \
-  --from 南部 \
-  --to 广安 \
-  --plan-index 1 \
-  --seat second_class \
-  --passengers 张三 \
-  --pay-channel alipay
-```
-
-按渠道解析并生成本地支付二维码（普通订单）：
-
-```bash
-python3 client.py book \
-  --date 2026-03-23 \
-  --from 宁波 \
-  --to 宜春 \
-  --train-code G1234 \
-  --seat second_class \
-  --passengers 张三 \
-  --channel alipay
-```
-
 说明：
 
 - 当前链路可以稳定完成下单并拿到订单号。
-- 脚本会尝试调用 `payOrder/paycheckNew` 返回支付链接参数。
-- 若传 `--channel`，脚本会尝试解析到渠道支付链接并本地生成二维码图片，方便扫码支付。
-- 若未传 `--channel` 或支付参数缺失，仍建议在 12306 App 的“待支付订单”中完成支付。
+- 下单命令（`book`/`transfer-book`）仅负责提交订单，不再处理支付参数。
+- 下单成功后统一使用 `order-pay` 获取支付参数（可选 `--pay-channel` 生成渠道二维码）。
 
 多个乘客用逗号分隔：
 
@@ -377,8 +363,7 @@ python3 client.py transfer-book \
 - `--plan-index` 对应 `transfer-ticket` 文本结果中的方案序号（从 1 开始）。
 - 中转下单链路基于 `lcQuery/lcConfirmPassenger`，按两程统一席别提交。
 - 当前实现会轮询 `queryOrderWaitTime(tourFlag=lc)` 直到拿到订单号或返回失败信息。
-- `--channel` 是中转查询渠道参数（默认 `E`），`--pay-channel` 才是支付渠道（`alipay/wechat/unionpay`）。
-- 传 `--pay-channel` 时会尝试解析渠道支付链接并本地生成支付二维码。
+- `--channel` 是中转查询渠道参数（默认 `E`），与支付渠道无关。
 
 ## 全局参数
 
