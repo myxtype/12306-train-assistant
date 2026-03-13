@@ -15,6 +15,7 @@
 - 查询候补订单（进行中/已处理）
 - 提交候补订单（基于“无票可候补”规则）
 - 取消候补订单（按候补单号）
+- 候补支付参数获取（输出支付网关 POST 参数）
 - 订票（提交订单并轮询订单号）
 - 支付信息获取（尝试生成支付链接）
 
@@ -43,6 +44,7 @@ python3 client.py transfer-book -h
 python3 client.py route -h
 python3 client.py candidate-orders -h
 python3 client.py candidate-submit -h
+python3 client.py candidate-pay -h
 python3 client.py qr-login-create -h
 ```
 
@@ -228,6 +230,24 @@ python3 client.py candidate-submit \
 python3 client.py candidate-cancel --reserve-no <候补单号>
 ```
 
+候补支付参数（优先从当前候补队列自动读取 `reserve_no`）：
+
+```bash
+python3 client.py candidate-pay
+```
+
+按候补单号获取支付参数：
+
+```bash
+python3 client.py candidate-pay --reserve-no <候补单号>
+```
+
+直接生成可浏览器打开的支付链接（GET）：
+
+```bash
+python3 client.py candidate-pay --channel alipay
+```
+
 可选参数：
 
 - `candidate-orders --processed`（查已处理记录，不加则查进行中）
@@ -240,12 +260,17 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 - `candidate-submit --max-wait-seconds`（候补排队轮询最长等待秒数，默认 `30`）
 - `candidate-submit --poll-interval`（候补排队轮询间隔秒数，默认 `1.0`）
 - `candidate-cancel --reserve-no`（候补单号）
+- `candidate-pay --reserve-no`（候补单号；不传则尝试从 `candidate-queue` 自动读取）
+- `candidate-pay --channel`（`alipay`/`wechat`/`unionpay`，直接生成第三方 GET 支付链接）
 
 说明：
 
 - 候补命令需要登录态（可沿用已有 cookie）。
 - 若 cookie 失效，请先执行 `login`（或二维码登录）更新 cookie 后再重试。
 - `candidate-submit` 会继续执行候补确认与排队查询；若超时会返回“仍在排队中”，可继续用 `candidate-orders`/`candidate-queue` 查看。
+- `candidate-pay` 默认输出支付网关 POST 参数（`epay.12306.cn/pay/payGateway`）。
+- 若用户侧仅支持浏览器 GET 打开链接，使用 `candidate-pay --channel alipay|wechat|unionpay` 可直接返回第三方支付链接。
+- `candidate-pay --channel` 会额外生成支付二维码图片（优先写入系统 `tmp` 目录，失败时回退到项目目录），便于用户扫码支付。
 
 ### 9) 订票
 

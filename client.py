@@ -14,8 +14,9 @@ import tempfile
 import time
 import uuid as uuidlib
 from pathlib import Path
+from shlex import quote as shell_quote
 from typing import Any
-from urllib.parse import unquote, urlencode
+from urllib.parse import unquote, urlencode, urljoin
 
 import requests
 
@@ -1594,6 +1595,225 @@ class KyfwClient:
             f"{self._extract_error_message(cancel_not_complete_resp)}"
         )
 
+    def continue_pay_candidate_order(self, *, reserve_no: str) -> str:
+        reserve_no = reserve_no.strip()
+        if not reserve_no:
+            raise ValueError("--reserve-no 不能为空")
+        return self._request_text(
+            "POST",
+            "/otn/afterNateOrder/continuePayNoCompleteMyOrder",
+            data={"reserve_no": reserve_no},
+            referer="/otn/view/lineUp_order.html",
+        )
+
+    def init_candidate_pay_order(self) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/otn/afterNatePay/payOrderInit",
+            data={"_json_att": ""},
+            referer="/otn/view/lineUp_payConfirm.html",
+        )
+
+    def candidate_pay_check(self) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/otn/afterNatePay/paycheck",
+            data={"_json_att": ""},
+            referer="/otn/view/lineUp_payConfirm.html",
+        )
+
+    @staticmethod
+    def _extract_html_form(html: str, *, form_name: str = "myform") -> tuple[str, dict[str, str]]:
+        form_tag_re = re.compile(r"<form\b[^>]*>", re.I)
+        attr_re = re.compile(r'([A-Za-z_:][\w:.-]*)\s*=\s*["\']([^"\']*)["\']')
+        matched_tag = None
+        for form_match in form_tag_re.finditer(html):
+            form_tag = form_match.group(0)
+            attrs = {k.lower(): v for k, v in attr_re.findall(form_tag)}
+            if attrs.get("name") == form_name:
+                matched_tag = form_tag
+                break
+        if not matched_tag:
+            for form_match in form_tag_re.finditer(html):
+                form_tag = form_match.group(0)
+                attrs = {k.lower(): v for k, v in attr_re.findall(form_tag)}
+                if attrs.get("id") == form_name:
+                    matched_tag = form_tag
+                    break
+        if not matched_tag:
+            raise RuntimeError(f"未在支付页面中找到表单 {form_name}。")
+        form_attrs = {k.lower(): v for k, v in attr_re.findall(matched_tag)}
+        action = str(form_attrs.get("action") or "").strip()
+        if not action:
+            raise RuntimeError(f"支付表单 {form_name} 缺少 action。")
+
+        inputs: dict[str, str] = {}
+        for input_match in re.finditer(r"<input\b[^>]*>", html, re.I):
+            input_tag = input_match.group(0)
+            input_attrs = {k.lower(): v for k, v in attr_re.findall(input_tag)}
+            key = str(input_attrs.get("name") or "").strip()
+            value = str(input_attrs.get("value") or "")
+            if key:
+                inputs[key] = value
+        return action, inputs
+
+    @staticmethod
+    def _extract_first_html_form(html: str) -> tuple[str, str, dict[str, str]] | None:
+        form_tag_re = re.compile(r"<form\b[^>]*>", re.I)
+        attr_re = re.compile(r'([A-Za-z_:][\w:.-]*)\s*=\s*["\']([^"\']*)["\']')
+        matched = form_tag_re.search(html)
+        if not matched:
+            return None
+        form_tag = matched.group(0)
+        form_attrs = {k.lower(): v for k, v in attr_re.findall(form_tag)}
+        action = str(form_attrs.get("action") or "").strip()
+        method = str(form_attrs.get("method") or "post").strip().lower() or "post"
+        if not action:
+            return None
+        inputs: dict[str, str] = {}
+        for input_match in re.finditer(r"<input\b[^>]*>", html, re.I):
+            input_tag = input_match.group(0)
+            input_attrs = {k.lower(): v for k, v in attr_re.findall(input_tag)}
+            key = str(input_attrs.get("name") or "").strip()
+            value = str(input_attrs.get("value") or "")
+            if key:
+                inputs[key] = value
+        return action, method, inputs
+
+    def resolve_epay_channel_url(
+        self,
+        *,
+        gateway_post_url: str,
+        gateway_post_data: dict[str, str],
+        bank_id: str,
+        business_type: str = "1",
+    ) -> dict[str, Any]:
+        sess = requests.Session()
+        sess.headers.update({"User-Agent": USER_AGENT})
+
+        gateway_resp = sess.post(
+            gateway_post_url,
+            data=gateway_post_data,
+            timeout=self.timeout,
+        )
+        gateway_resp.raise_for_status()
+        html = gateway_resp.text
+        action, form_data = self._extract_html_form(html, form_name="myform")
+        if not action:
+            raise RuntimeError("支付页面未返回可提交的 form action。")
+
+        submit_url = urljoin(str(gateway_resp.url), action)
+        submit_payload = dict(form_data)
+        submit_payload["bankId"] = bank_id
+        submit_payload["businessType"] = business_type
+
+        channel_resp = sess.post(
+            submit_url,
+            data=submit_payload,
+            timeout=self.timeout,
+            allow_redirects=False,
+        )
+        parsed_steps: list[dict[str, Any]] = []
+
+        def _extract_redirect_url(resp: requests.Response) -> str | None:
+            location = str(resp.headers.get("Location") or "").strip()
+            if location:
+                return urljoin(str(resp.url), location)
+            body = resp.text or ""
+            redirect_patterns = [
+                r'location\.href\s*=\s*["\']([^"\']+)["\']',
+                r'window\.location\.href\s*=\s*["\']([^"\']+)["\']',
+                r'window\.location\s*=\s*["\']([^"\']+)["\']',
+                r'location\.replace\(\s*["\']([^"\']+)["\']\s*\)',
+                r'top\.location\.href\s*=\s*["\']([^"\']+)["\']',
+                r'parent\.location\.href\s*=\s*["\']([^"\']+)["\']',
+            ]
+            for pattern in redirect_patterns:
+                matched = re.search(pattern, body, re.I)
+                if matched:
+                    return urljoin(str(resp.url), matched.group(1))
+
+            meta_refresh = re.search(
+                r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\'][^"\']*url=([^"\']+)',
+                body,
+                re.I,
+            )
+            if meta_refresh:
+                return urljoin(str(resp.url), meta_refresh.group(1).strip())
+            return None
+
+        def _resolve_redirect_chain(start_url: str, *, max_hops: int = 4) -> tuple[str, list[dict[str, Any]]]:
+            chain: list[dict[str, Any]] = []
+            current_url = start_url
+            for _ in range(max_hops):
+                hop_resp = sess.get(
+                    current_url,
+                    timeout=self.timeout,
+                    allow_redirects=False,
+                )
+                chain.append({"url": current_url, "status": hop_resp.status_code})
+                location = str(hop_resp.headers.get("Location") or "").strip()
+                if 300 <= hop_resp.status_code < 400 and location:
+                    current_url = urljoin(str(hop_resp.url), location)
+                    continue
+                break
+            return current_url, chain
+
+        current_resp = channel_resp
+        for _ in range(3):
+            parsed_steps.append({"url": current_resp.url, "status": current_resp.status_code})
+            redirect_url = _extract_redirect_url(current_resp)
+            if redirect_url:
+                final_redirect_url, redirect_chain = _resolve_redirect_chain(redirect_url)
+                return {
+                    "channel_submit_url": submit_url,
+                    "channel_submit_status": channel_resp.status_code,
+                    "channel_redirect_url_raw": redirect_url,
+                    "channel_redirect_url": final_redirect_url,
+                    "channel_redirect_chain": redirect_chain,
+                    "resolve_steps": parsed_steps,
+                }
+
+            form_info = self._extract_first_html_form(current_resp.text or "")
+            if not form_info:
+                break
+            next_action, next_method, next_data = form_info
+            next_url = urljoin(str(current_resp.url), next_action)
+            if next_method == "get":
+                query = urlencode(next_data)
+                final_url = next_url if not query else f"{next_url}?{query}"
+                final_redirect_url, redirect_chain = _resolve_redirect_chain(final_url)
+                return {
+                    "channel_submit_url": submit_url,
+                    "channel_submit_status": channel_resp.status_code,
+                    "channel_redirect_url_raw": final_url,
+                    "channel_redirect_url": final_redirect_url,
+                    "channel_redirect_chain": redirect_chain,
+                    "resolve_steps": parsed_steps,
+                }
+            current_resp = sess.post(
+                next_url,
+                data=next_data,
+                timeout=self.timeout,
+                allow_redirects=False,
+            )
+
+        raise RuntimeError("未解析到第三方支付跳转链接（Location/JS/meta/form）。")
+
+    @staticmethod
+    def candidate_pay_channel_to_bank_id(channel: str) -> str:
+        normalized = channel.strip().lower()
+        mapping = {
+            "alipay": "33000010",
+            "wechat": "33000020",
+            "wx": "33000020",
+            "unionpay": "00011000",
+        }
+        bank_id = mapping.get(normalized)
+        if not bank_id:
+            raise ValueError("不支持的支付渠道，可选值: alipay / wechat / unionpay")
+        return bank_id
+
     def _load_station_index(self) -> dict[str, str]:
         if self._station_index is not None:
             return self._station_index
@@ -2538,10 +2758,24 @@ class KyfwClient:
         pay_url = epayurl
         if pay_params:
             pay_url = f"{epayurl}?{urlencode(pay_params)}"
+        gateway_post_data = {"_json_att": "", **pay_params}
+        curl_parts = [
+            "curl",
+            "-sS",
+            "-X",
+            "POST",
+            shell_quote(epayurl),
+        ]
+        for key, value in gateway_post_data.items():
+            curl_parts.extend(["--data-urlencode", shell_quote(f"{key}={value}")])
+        gateway_curl = " ".join(curl_parts)
         return {
             "pay_url": pay_url,
             "epayurl": epayurl,
             "pay_params": pay_params,
+            "gateway_post_url": epayurl,
+            "gateway_post_data": gateway_post_data,
+            "gateway_curl": gateway_curl,
             "pay_form": pay_form,
             "paycheckNew": pay_check_new_resp,
         }
@@ -3347,6 +3581,45 @@ def write_qr_image_file(image_b64: str, *, preferred_path: Path | None = None) -
     return image_path
 
 
+def write_payment_qr_image_file(
+    payment_url: str,
+    *,
+    timeout: int = 15,
+    preferred_path: Path | None = None,
+) -> Path:
+    url = str(payment_url or "").strip()
+    if not url:
+        raise ValueError("支付链接为空，无法生成二维码。")
+
+    qr_api = "https://api.qrserver.com/v1/create-qr-code/"
+    resp = requests.get(
+        qr_api,
+        params={"size": "420x420", "data": url},
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    image_bytes = resp.content
+    if not image_bytes:
+        raise RuntimeError("二维码服务返回空内容。")
+
+    if preferred_path is not None:
+        target = preferred_path.expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(image_bytes)
+        return target
+
+    name = f"12306_pay_qr_{uuidlib.uuid4().hex[:12]}.png"
+    image_path = Path(tempfile.gettempdir()) / name
+    try:
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(image_bytes)
+    except OSError:
+        image_path = Path(__file__).resolve().parent / name
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(image_bytes)
+    return image_path
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="12306 API CLI")
     parser.add_argument("--base-url", default=BASE_URL, help="12306 base URL")
@@ -3423,6 +3696,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     candidate_cancel_p = sub.add_parser("candidate-cancel", help="取消候补订单")
     candidate_cancel_p.add_argument("--reserve-no", required=True, help="候补单号（reserve_no）")
+
+    candidate_pay_p = sub.add_parser("candidate-pay", help="候补订单支付参数获取")
+    candidate_pay_p.add_argument("--reserve-no", help="候补单号（不传则尝试从 candidate-queue 自动读取）")
+    candidate_pay_p.add_argument(
+        "--channel",
+        choices=["alipay", "wechat", "unionpay"],
+        help="可选：直接生成对应支付渠道的最终 GET 跳转链接",
+    )
 
     left_p = sub.add_parser("left-ticket", help="查询车次余票")
     left_p.add_argument("--date", required=True, help="出发日期 YYYY-MM-DD")
@@ -3867,6 +4148,88 @@ def main() -> int:
                 print("候补订单取消成功。")
                 print("候补单号:", result.get("reserve_no"))
                 print("取消方式:", result.get("method"))
+            return 0
+
+        if args.command == "candidate-pay":
+            ensure_logged_in(client)
+            reserve_no = str(args.reserve_no or "").strip()
+            queue_resp: dict[str, Any] | None = None
+            if not reserve_no:
+                queue_resp = client.query_candidate_queue()
+                queue_raw = queue_resp.get("raw") if isinstance(queue_resp, dict) else None
+                queue_data = queue_raw.get("data") if isinstance(queue_raw, dict) else None
+                if isinstance(queue_data, dict):
+                    reserve_no = str(queue_data.get("reserve_no") or "").strip()
+            if not reserve_no:
+                raise RuntimeError("未找到可支付的候补单号，请传入 --reserve-no 或先执行 candidate-queue。")
+
+            continue_pay_resp_text = client.continue_pay_candidate_order(reserve_no=reserve_no)
+            init_pay_resp = client.init_candidate_pay_order()
+            client._assert_request_ok(init_pay_resp, context="afterNatePay payOrderInit")
+            pay_check_resp = client.candidate_pay_check()
+            client._assert_request_ok(pay_check_resp, context="afterNatePay paycheck")
+            pay_data = pay_check_resp.get("data") if isinstance(pay_check_resp, dict) else None
+            if isinstance(pay_data, dict) and pay_data.get("flag") is False:
+                raise RuntimeError(f"候补支付参数获取失败(flag=false): {pay_check_resp}")
+            payment = client._build_payment_result(pay_check_resp)
+            channel_result: dict[str, Any] | None = None
+            pay_qr_url = ""
+            pay_qr_image_file = ""
+            pay_qr_error = ""
+            if args.channel:
+                bank_id = client.candidate_pay_channel_to_bank_id(args.channel)
+                gateway_post_url = str(payment.get("gateway_post_url") or "").strip()
+                gateway_post_data = payment.get("gateway_post_data")
+                if not gateway_post_url or not isinstance(gateway_post_data, dict):
+                    raise RuntimeError("候补支付网关参数不完整，无法生成渠道跳转链接。")
+                channel_result = client.resolve_epay_channel_url(
+                    gateway_post_url=gateway_post_url,
+                    gateway_post_data={str(k): str(v) for k, v in gateway_post_data.items()},
+                    bank_id=bank_id,
+                    business_type="1",
+                )
+                if isinstance(channel_result, dict):
+                    raw_url = str(channel_result.get("channel_redirect_url_raw") or "").strip()
+                    final_url = str(channel_result.get("channel_redirect_url") or "").strip()
+                    pay_qr_url = raw_url or final_url
+                    if pay_qr_url:
+                        try:
+                            qr_path = write_payment_qr_image_file(pay_qr_url, timeout=client.timeout)
+                            pay_qr_image_file = str(qr_path)
+                        except Exception as qr_err:
+                            pay_qr_error = str(qr_err)
+            out = {
+                "reserve_no": reserve_no,
+                "candidate_queue": queue_resp,
+                "continuePayNoCompleteMyOrder": continue_pay_resp_text,
+                "payOrderInit": init_pay_resp,
+                "payment": payment,
+                "channel": args.channel or "",
+                "channel_result": channel_result,
+                "pay_qr_url": pay_qr_url,
+                "pay_qr_image_file": pay_qr_image_file,
+                "pay_qr_error": pay_qr_error,
+            }
+            if args.json:
+                print(json.dumps(out, ensure_ascii=False, indent=2))
+            else:
+                print("候补单号:", reserve_no)
+                print("支付网关:", payment.get("gateway_post_url"))
+                print("支付请求(curl, POST):")
+                print(payment.get("gateway_curl"))
+                if channel_result:
+                    print("支付渠道:", args.channel)
+                    print("第三方支付链接(GET):", channel_result.get("channel_redirect_url"))
+                    if pay_qr_image_file:
+                        print("支付二维码链接:", pay_qr_url)
+                        print("支付二维码图片:", pay_qr_image_file)
+                        print("说明: 优先使用中间支付链接生成二维码，建议用户用支付宝/微信扫码支付。")
+                    elif pay_qr_error:
+                        print("二维码生成失败:", pay_qr_error)
+                        print("可手动打开上面的支付链接。")
+                else:
+                    print("说明: 候补支付网关为 POST 表单，打开后可在页面选择支付宝/微信。")
+                    print("如需直接生成可浏览器打开的 GET 支付链接，请加 --channel alipay|wechat|unionpay。")
             return 0
 
         if args.command == "left-ticket":
