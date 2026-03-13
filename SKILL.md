@@ -261,9 +261,14 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 | `--to` | 是 | 无 | 到达站 |
 | `--train-code` | 是 | 无 | 目标车次（如 `G101`） |
 | `--seat` | 是 | 无 | 席别（如 `second_class` / `O` / `一等座`） |
+| `--passengers` | 否 | 空 | 乘客姓名，多个用逗号分隔；不传时默认选首位乘车人 |
 | `--purpose` | 否 | `ADULT` | 乘客类型 |
 | `--endpoint` | 否 | `queryG` | 余票接口类型 |
 | `--force` | 否 | 关闭 | 即使余票不是“无”也尝试提交候补 |
+| `--max-wait-seconds` | 否 | `30` | 候补排队轮询最长等待秒数 |
+| `--poll-interval` | 否 | `1.0` | 候补排队轮询间隔秒数 |
+
+说明：当前实现会继续执行候补确认与排队查询；若超时会返回“仍在排队中”，可继续用 `candidate-orders`/`candidate-queue` 查看。
 
 ### `candidate-cancel` 取消候补订单
 

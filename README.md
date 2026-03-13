@@ -235,13 +235,17 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 - `candidate-orders --start-date/--end-date`（日期区间）
 - `candidate-orders --limit`（文本输出最多展示条数）
 - `candidate-submit --seat`（候补席别；默认要求该席别余票为“无”）
+- `candidate-submit --passengers`（乘客姓名，多个逗号分隔；不传默认取首位乘车人）
 - `candidate-submit --force`（即使余票不是“无”也尝试提交）
+- `candidate-submit --max-wait-seconds`（候补排队轮询最长等待秒数，默认 `30`）
+- `candidate-submit --poll-interval`（候补排队轮询间隔秒数，默认 `1.0`）
 - `candidate-cancel --reserve-no`（候补单号）
 
 说明：
 
 - 候补命令需要登录态（可沿用已有 cookie）。
 - 若 cookie 失效，请先执行 `login`（或二维码登录）更新 cookie 后再重试。
+- `candidate-submit` 会继续执行候补确认与排队查询；若超时会返回“仍在排队中”，可继续用 `candidate-orders`/`candidate-queue` 查看。
 
 ### 9) 订票
 

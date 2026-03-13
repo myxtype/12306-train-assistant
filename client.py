@@ -1270,9 +1270,12 @@ class KyfwClient:
         to_station: str,
         train_code: str,
         seat: str,
+        passenger_names: list[str] | None = None,
         purpose_codes: str = "ADULT",
         endpoint: str = "queryG",
         force: bool = False,
+        max_wait_seconds: int = 30,
+        poll_interval: float = 1.0,
     ) -> dict[str, Any]:
         seat_code = self.resolve_seat_code(seat)
         seat_cfg = CANDIDATE_SEAT_CONFIG.get(seat_code)
@@ -1317,16 +1320,207 @@ class KyfwClient:
 
         data = submit.get("data") if isinstance(submit, dict) else None
         if isinstance(data, dict) and data.get("flag"):
+            passenger_init = self._request(
+                "POST",
+                "/otn/afterNate/passengerInitApi",
+                data={"_json_att": ""},
+                referer="/otn/view/lineUp_toPay.html",
+            )
+            self._assert_request_ok(passenger_init, context="候补 passengerInitApi")
+            passenger_init_data = passenger_init.get("data") if isinstance(passenger_init, dict) else None
+            if not isinstance(passenger_init_data, dict):
+                raise RuntimeError(f"候补 passengerInitApi 返回结构异常: {passenger_init}")
+
+            if str(passenger_init_data.get("if_check_slide_passcode") or "").strip() == "1":
+                return {
+                    "step": "slide_check_required",
+                    "submission_stage": "submitOrderRequest_only",
+                    "train": train_row,
+                    "seat_code": seat_code,
+                    "seat_name": seat_cfg["label"],
+                    "seat_status": seat_value,
+                    "secret_list": secret_list,
+                    "checkUser": check_user_resp,
+                    "submitOrderRequest": submit,
+                    "passengerInitApi": passenger_init,
+                    "message": "候补提交需要滑块验证，CLI 暂不支持自动处理。",
+                }
+
+            passenger_resp = self.query_passengers()
+            passenger_rows = passenger_resp.get("passengers") if isinstance(passenger_resp, dict) else None
+            if not isinstance(passenger_rows, list) or not passenger_rows:
+                raise RuntimeError(f"获取候补乘车人失败: {passenger_resp}")
+            requested_names = [x.strip() for x in (passenger_names or []) if x and x.strip()]
+            auto_selected_passengers = False
+            if requested_names:
+                selected_passengers = self._select_passengers(
+                    {"data": {"normal_passengers": passenger_rows}},
+                    requested_names,
+                )
+            else:
+                selected_passengers = [passenger_rows[0]]
+                auto_selected_passengers = True
+
+            sleeper_seat_codes = {"3", "4", "6", "A", "F", "I", "J"}
+            sleeper_selected = 1 if seat_cfg["hb_seat_code"] in sleeper_seat_codes else 0
+            passenger_info_chunks: list[str] = []
+            selected_passenger_names: list[str] = []
+            for p in selected_passengers:
+                p_type = str(p.get("passenger_type") or "1")
+                p_name = str(p.get("passenger_name") or "").strip()
+                p_id_type = str(p.get("passenger_id_type_code") or "")
+                p_id_no = str(p.get("passenger_id_no") or "")
+                p_all_enc = str(p.get("allEncStr") or "").strip()
+                if not p_name or not p_id_type or not p_id_no or not p_all_enc:
+                    raise RuntimeError(f"乘车人信息不完整，无法提交候补: {p}")
+                selected_passenger_names.append(p_name)
+                # 与 12306 页面一致：<票种>#<姓名>#<证件类型>#<证件号>#<allEncStr>#<是否优先下铺>
+                passenger_info_chunks.append(
+                    f"{p_type}#{p_name}#{p_id_type}#{p_id_no}#{p_all_enc}#{sleeper_selected}"
+                )
+            passenger_info = ",".join(passenger_info_chunks) + ","
+
+            hb_train_list = passenger_init_data.get("hbTrainList")
+            if not isinstance(hb_train_list, list) or not hb_train_list:
+                raise RuntimeError(f"候补 passengerInitApi 缺少 hbTrainList: {passenger_init}")
+            preferred_date = train_date.replace("-", "")
+            filtered_hb_items: list[dict[str, Any]] = []
+            for item in hb_train_list:
+                if not isinstance(item, dict):
+                    continue
+                same_code = str(item.get("station_train_code") or "").strip().upper() == train_code.upper()
+                same_seat = str(item.get("seat_type_code") or "").strip().upper() == seat_cfg["hb_seat_code"]
+                item_date = str(item.get("train_date") or "").replace("-", "").strip()
+                same_date = item_date == preferred_date if item_date else True
+                if same_code and same_seat and same_date:
+                    filtered_hb_items.append(item)
+            if not filtered_hb_items:
+                filtered_hb_items = [x for x in hb_train_list if isinstance(x, dict)]
+            hb_train_parts = [str(x.get("train_no") or "").strip() for x in filtered_hb_items]
+            hb_train_parts = [x for x in hb_train_parts if x]
+            if not hb_train_parts:
+                raise RuntimeError(f"候补 passengerInitApi 中缺少可用 train_no: {passenger_init}")
+            hb_train = "".join([f"{x}#" for x in hb_train_parts])
+
+            line_up_options = passenger_init_data.get("jzdhDiffSelect")
+            realize_limit_time_diff = "360"
+            if isinstance(line_up_options, list) and line_up_options:
+                realize_limit_time_diff = str(line_up_options[0])
+                if "360" in {str(v) for v in line_up_options}:
+                    realize_limit_time_diff = "360"
+
+            confirm_hb = self._request(
+                "POST",
+                "/otn/afterNate/confirmHB",
+                data={
+                    "passengerInfo": passenger_info,
+                    "jzParam": "",
+                    "hbTrain": hb_train,
+                    "lkParam": "",
+                    "sessionId": "",
+                    "sig": "",
+                    "scene": "",
+                    "encryptedData": "",
+                    "if_receive_wseat": "N",
+                    "realize_limit_time_diff": realize_limit_time_diff,
+                    "plans": "",
+                    "tmp_train_date": "",
+                    "tmp_train_time": "",
+                    "add_train_flag": "N",
+                    "add_train_seat_type_code": "",
+                    "_json_att": "",
+                },
+                referer="/otn/view/lineUp_toPay.html",
+            )
+            self._assert_request_ok(confirm_hb, context="候补 confirmHB", require_status=False)
+            confirm_hb_data = confirm_hb.get("data") if isinstance(confirm_hb, dict) else None
+            if isinstance(confirm_hb_data, dict) and confirm_hb_data.get("msg"):
+                raise RuntimeError(f"候补确认失败: {confirm_hb_data.get('msg')}")
+
+            wait_start = time.monotonic()
+            last_queue_resp: dict[str, Any] | None = None
+            while True:
+                queue_resp = self._request(
+                    "POST",
+                    "/otn/afterNate/queryQueue",
+                    data={"_json_att": ""},
+                    referer="/otn/view/lineUp_toPay.html",
+                )
+                self._assert_request_ok(queue_resp, context="候补排队查询", require_status=False)
+                last_queue_resp = queue_resp
+                queue_data = queue_resp.get("data") if isinstance(queue_resp, dict) else None
+                if not isinstance(queue_data, dict):
+                    raise RuntimeError(f"候补排队返回结构异常: {queue_resp}")
+
+                if queue_data.get("isAsync"):
+                    if not queue_data.get("flag"):
+                        raise RuntimeError(
+                            f"候补排队失败: {queue_data.get('msg') or self._extract_error_message(queue_resp)}"
+                        )
+                    status_code = str(queue_data.get("status") or "")
+                    if status_code == "1":
+                        break
+                    if status_code == "-1":
+                        raise RuntimeError(f"候补排队失败: {queue_data.get('msg') or 'status=-1'}")
+                else:
+                    if queue_data.get("flag"):
+                        break
+                    raise RuntimeError(f"候补排队失败: {queue_data.get('msg') or self._extract_error_message(queue_resp)}")
+
+                if time.monotonic() - wait_start > max_wait_seconds:
+                    return {
+                        "step": "queue_waiting",
+                        "submission_stage": "confirmHB",
+                        "train": train_row,
+                        "seat_code": seat_code,
+                        "seat_name": seat_cfg["label"],
+                        "seat_status": seat_value,
+                        "selected_passengers": selected_passenger_names,
+                        "auto_selected_passengers": auto_selected_passengers,
+                        "realize_limit_time_diff": realize_limit_time_diff,
+                        "checkUser": check_user_resp,
+                        "submitOrderRequest": submit,
+                        "passengerInitApi": passenger_init,
+                        "confirmHB": confirm_hb,
+                        "queryQueue": last_queue_resp,
+                        "next_url": self._url("/otn/view/lineUp_order.html"),
+                    }
+                time.sleep(max(0.3, poll_interval))
+
+            reserve_no: str | None = None
+            try:
+                orders = self.query_candidate_orders(processed=False, page_no=0)
+                rows = orders.get("rows") if isinstance(orders, dict) else None
+                if isinstance(rows, list):
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        row_train = str(row.get("train_code") or "").strip().upper()
+                        row_date = str(row.get("train_date") or "").replace("-", "").strip()
+                        if row_train == train_code.upper() and (not row_date or row_date == preferred_date):
+                            reserve_no = str(row.get("reserve_no") or "").strip() or None
+                            break
+            except Exception:
+                reserve_no = None
+
             return {
-                "step": "submitted",
+                "step": "queued",
+                "submission_stage": "confirmHB",
                 "train": train_row,
                 "seat_code": seat_code,
                 "seat_name": seat_cfg["label"],
                 "seat_status": seat_value,
                 "secret_list": secret_list,
+                "selected_passengers": selected_passenger_names,
+                "auto_selected_passengers": auto_selected_passengers,
+                "realize_limit_time_diff": realize_limit_time_diff,
+                "reserve_no": reserve_no,
                 "checkUser": check_user_resp,
                 "submitOrderRequest": submit,
-                "next_url": self._url("/otn/view/lineUp_toPay.html"),
+                "passengerInitApi": passenger_init,
+                "confirmHB": confirm_hb,
+                "queryQueue": last_queue_resp,
+                "next_url": self._url("/otn/view/lineUp_order.html"),
             }
 
         if isinstance(data, dict) and data.get("faceCheck"):
@@ -3211,6 +3405,7 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_submit_p.add_argument("--to", dest="to_station", required=True, help="到达站（中文名/拼音/三字码）")
     candidate_submit_p.add_argument("--train-code", required=True, help="车次，例如 G1234")
     candidate_submit_p.add_argument("--seat", required=True, help="席别，例如 second_class / O / 一等座")
+    candidate_submit_p.add_argument("--passengers", default="", help="乘客姓名，多个用逗号分隔；不传默认取首位乘车人")
     candidate_submit_p.add_argument("--purpose", default="ADULT", help="乘客类型，默认 ADULT")
     candidate_submit_p.add_argument(
         "--endpoint",
@@ -3223,6 +3418,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="即使该席别余票不是“无”也尝试提交候补",
     )
+    candidate_submit_p.add_argument("--max-wait-seconds", type=int, default=30, help="候补排队轮询最长等待秒数")
+    candidate_submit_p.add_argument("--poll-interval", type=float, default=1.0, help="候补排队轮询间隔秒数")
 
     candidate_cancel_p = sub.add_parser("candidate-cancel", help="取消候补订单")
     candidate_cancel_p.add_argument("--reserve-no", required=True, help="候补单号（reserve_no）")
@@ -3608,27 +3805,49 @@ def main() -> int:
 
         if args.command == "candidate-submit":
             ensure_logged_in(client)
+            passenger_names = [x.strip() for x in str(args.passengers or "").split(",") if x.strip()]
             result = client.submit_candidate_order(
                 train_date=args.date,
                 from_station=args.from_station,
                 to_station=args.to_station,
                 train_code=args.train_code,
                 seat=args.seat,
+                passenger_names=passenger_names,
                 purpose_codes=args.purpose,
                 endpoint=args.endpoint,
                 force=args.force,
+                max_wait_seconds=args.max_wait_seconds,
+                poll_interval=args.poll_interval,
             )
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             else:
                 step = result.get("step")
-                if step == "submitted":
-                    print("候补提交成功。")
+                if step == "queued":
+                    print("候补提交成功并完成排队确认。")
                     print("车次:", result.get("train", {}).get("train_code"))
                     print("席别:", result.get("seat_name"), f"({result.get('seat_code')})")
                     print("提交前余票:", result.get("seat_status"))
+                    print("乘客:", ",".join(result.get("selected_passengers") or []) or "--")
+                    if result.get("auto_selected_passengers"):
+                        print("提示: 未传 --passengers，已自动使用首位乘车人。")
+                    if result.get("reserve_no"):
+                        print("候补单号:", result.get("reserve_no"))
+                    else:
+                        print("候补单号: 暂未解析到（可用 candidate-orders 查询）")
                     print("下一步页面:", result.get("next_url"))
-                    print("可用 candidate-orders / candidate-queue 查看状态。")
+                elif step == "queue_waiting":
+                    print("候补已提交并进入排队中。")
+                    print("车次:", result.get("train", {}).get("train_code"))
+                    print("席别:", result.get("seat_name"), f"({result.get('seat_code')})")
+                    print("乘客:", ",".join(result.get("selected_passengers") or []) or "--")
+                    if result.get("auto_selected_passengers"):
+                        print("提示: 未传 --passengers，已自动使用首位乘车人。")
+                    print("排队超时：", args.max_wait_seconds, "秒（仍可继续等待）")
+                    print("可用 candidate-orders / candidate-queue 持续查看状态。")
+                elif step == "slide_check_required":
+                    print("候补提交需要滑块验证，CLI 暂不支持自动处理。")
+                    print("请在 12306 Web/App 完成一次验证后再重试。")
                 elif step == "face_check_required":
                     print("候补提交触发身份核验。")
                     print("车次:", result.get("train", {}).get("train_code"))
