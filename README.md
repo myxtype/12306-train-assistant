@@ -3,7 +3,7 @@
 一个基于 Python 的 12306 命令行脚本，支持：
 
 - 登录（含短信验证码流程）
-- 二维码登录（异步：生成/检查分离）
+- 二维码登录（生成后自动后台检查，不阻塞）
 - 登录状态检查（已登录时返回用户关键信息）
 - 查询当前账号乘车人信息
 - 查询余票
@@ -44,7 +44,6 @@ python3 client.py route -h
 python3 client.py candidate-orders -h
 python3 client.py candidate-submit -h
 python3 client.py qr-login-create -h
-python3 client.py qr-login-check -h
 ```
 
 ## 常用命令
@@ -71,22 +70,18 @@ python3 client.py login --username <账号> --id-last4 <证件后4位> --sms-cod
 python3 client.py login --username <账号> --password <密码>
 ```
 
-二维码登录（异步两段式，不轮询）：
+二维码登录（创建后自动后台检查，不阻塞）：
 
 ```bash
 # 1) 生成二维码后立即退出
 python3 client.py qr-login-create --qr-image-file ./12306_qr_login.png
-
-# 2) 让 AI 用后台方式立即启动检查（固定1秒轮询、持续等待）
-nohup python3 client.py qr-login-check > /tmp/12306_qr_check.log 2>&1 &
 ```
 
-如果不传 `--qr-image-file`，脚本会自动生成随机文件名，优先写到 `client.py` 所在目录，失败时回退到系统 `tmp` 目录，并输出最终路径。
+如果不传 `--qr-image-file`，脚本会自动生成随机文件名，优先写到系统 `tmp` 目录，失败时回退到 `client.py` 所在目录，并输出最终路径。创建后会自动后台启动登录检查进程，并输出 PID 与日志路径。
 
 可选参数：
 
 - `qr-login-create --state-file`（二维码状态文件，默认从 `--cookie-file` 推导）
-- `qr-login-check` 无专属参数（固定1秒轮询、持续等待）
 
 ### 2) 查询登录状态
 
@@ -189,6 +184,10 @@ python3 client.py orders --where G
 
 - `--where G`：未出行/近期
 - `--where H`：历史订单
+- `--where H` 时，`--end-date` 必须早于今天（最大为昨天）；不传时默认按昨天处理
+- `--query-type 1`：按订票日期查询（默认）
+- `--query-type 2`：按乘车日期查询
+- `--train-name`：按订单号/车次/姓名筛选（对应接口参数 `sequeue_train_name`）
 
 若 cookie 未登录或失效，请先执行 `login`（或二维码登录）更新 cookie 后再查询。
 

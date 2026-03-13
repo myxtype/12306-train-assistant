@@ -1,6 +1,6 @@
 ---
 name: 12306-train-assistant
-description: 12306 查询与订票辅助技能，支持余票查询、经停站查询、中转换乘、候补查询与提交/取消、登录状态检查、密码登录与二维码登录（异步生成/检查）、下单与支付链接获取；当用户提到火车票、高铁票、经停站、中转、候补或 12306 查票时触发。
+description: 12306 查询与订票辅助技能，支持余票查询、经停站查询、中转换乘、候补查询与提交/取消、登录状态检查、密码登录与二维码登录（创建后自动后台检查）、下单与支付链接获取；当用户提到火车票、高铁票、经停站、中转、候补或 12306 查票时触发。
 version: 0.6.1
 icon: 🚄
 ---
@@ -16,7 +16,7 @@ icon: 🚄
 - 中转下单：`transfer-book`
 - 经停站：`route`（支持 `--train-code` 自动解析）
 - 登录态检查：`status`
-- 二维码登录：`qr-login-create` / `qr-login-check`
+- 二维码登录：`qr-login-create`
 - 候补管理：`candidate-queue` / `candidate-orders` / `candidate-submit` / `candidate-cancel`
 - 需要登录的操作：`passengers` / `orders` / `book` / `transfer-book` / `candidate-submit` / `candidate-cancel`
 
@@ -39,7 +39,7 @@ icon: 🚄
 4. `route` 优先用 `--train-code`，减少用户提供 `train_no` 的负担。
 5. 失败时先给出可执行修复建议（缺参数、日期格式、站名不匹配、风控限制等）。
 6. `book` 成功后优先告知订单号与支付链接；若网页支付不可用，明确建议去 12306 App 的“待支付订单”继续支付。
-7. `qr-login-check` 不要前台主动调用，只能通过 `nohup ... &` 等后台方式执行；扫码确认后统一用 `status` 判断是否已登录。
+7. `qr-login-create` 会自动后台启动登录检查；扫码确认后统一用 `status` 判断是否已登录。
 
 ## 常用示例
 
@@ -87,7 +87,6 @@ python3 client.py login --username <账号> --id-last4 <证件后4位> --sms-cod
 
 # 二维码登录流程
 python3 client.py qr-login-create
-nohup python3 client.py qr-login-check > /dev/null 2>&1 &
 python3 client.py status
 ```
 
@@ -215,17 +214,11 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 
 无专属参数，仅使用全局参数。
 
-### `qr-login-create` 生成二维码登录图片（不轮询）
+### `qr-login-create` 生成二维码登录图片（自动后台检查，不阻塞）
 
 | 参数 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
 | `--appid` | 否 | `otn` | 二维码登录 appid |
-
-### `qr-login-check` 检查二维码登录状态
-
-| 参数 | 必填 | 默认值 | 说明 |
-|---|---|---|---|
-| 无 | - | - | 固定 1 秒轮询并持续等待，直到成功或二维码失效；仅可用 `nohup ... &` 等方式后台运行，不主动前台调用。用户扫码后用 `status` 确认登录是否成功 |
 
 ### `passengers` 乘车人查询
 
@@ -239,11 +232,11 @@ python3 client.py candidate-cancel --reserve-no <候补单号>
 |---|---|---|---|
 | `--where` | 否 | `G` | `G` 未出行/近期，`H` 历史订单 |
 | `--start-date` | 否 | 自动计算 | 查询起始日期，`YYYY-MM-DD` |
-| `--end-date` | 否 | 今天 | 查询结束日期，`YYYY-MM-DD` |
+| `--end-date` | 否 | 今天（`--where H` 时为昨天） | 查询结束日期，`YYYY-MM-DD`；历史订单场景必须早于今天 |
 | `--page-index` | 否 | `0` | 页码 |
 | `--page-size` | 否 | `8` | 每页条数 |
-| `--query-type` | 否 | `1` | 订单查询类型 |
-| `--train-name` | 否 | 空 | 可按车次过滤 |
+| `--query-type` | 否 | `1` | 查询类型：`1` 按订票日期，`2` 按乘车日期 |
+| `--train-name` | 否 | 空 | 按订单号/车次/姓名筛选（对应接口字段 `sequeue_train_name`） |
 
 ### `candidate-queue` 候补排队状态
 

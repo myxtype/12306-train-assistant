@@ -8,6 +8,7 @@ import getpass
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -1080,8 +1081,16 @@ class KyfwClient:
         query_type: int = 1,
         train_name: str = "",
     ) -> dict[str, Any]:
-        end = dt.date.today() if end_date is None else dt.date.fromisoformat(end_date)
+        today = dt.date.today()
+        if end_date is None:
+            end = today - dt.timedelta(days=1) if query_where == "H" else today
+        else:
+            end = dt.date.fromisoformat(end_date)
+        if query_where == "H" and end >= today:
+            raise ValueError("--where H 时，--end-date 必须早于今天（最大为昨天）")
         start = end - dt.timedelta(days=30) if start_date is None else dt.date.fromisoformat(start_date)
+        if start > end:
+            raise ValueError("--start-date 不能晚于 --end-date")
         data = {
             "come_from_flag": "my_order",
             "pageIndex": str(page_index),
@@ -2916,6 +2925,15 @@ def print_orders(resp: dict[str, Any]) -> None:
     orders = data.get("OrderDTODataList", [])
     print(f"订单总数: {total}, 当前页: {len(orders)}")
     for order in orders:
+        from_name = order.get("from_station_name_page")
+        to_name = order.get("to_station_name_page")
+        if isinstance(from_name, list):
+            from_name = ",".join([str(x) for x in from_name if x not in (None, "")]) or "--"
+        if isinstance(to_name, list):
+            to_name = ",".join([str(x) for x in to_name if x not in (None, "")]) or "--"
+        from_name = from_name or "--"
+        to_name = to_name or "--"
+
         order_date = order.get("order_date") or "--"
         # `order_date` 是下单时间，`start_train_date_page` 才是出行日期。
         travel_date = (
@@ -2926,14 +2944,33 @@ def print_orders(resp: dict[str, Any]) -> None:
         )
         print(
             f"- 订单号: {order.get('sequence_no')} | 下单日期: {order_date} | 出行日期: {travel_date} | "
-            f"{order.get('train_code_page')} {order.get('from_station_name_page')} -> {order.get('to_station_name_page')} | "
+            f"{order.get('train_code_page')} {from_name} -> {to_name} | "
             f"{order.get('start_time_page')} -> {order.get('arrive_time_page')} | 人数: {order.get('ticket_totalnum')}"
         )
         for ticket in order.get("tickets", []):
             passenger = (ticket.get("passengerDTO") or {}).get("passenger_name") or ticket.get("book_user_name")
+            ticket_type = ticket.get("ticket_type_name") or ticket.get("ticket_type_code") or "--"
+            seat_type = ticket.get("seat_type_name") or ticket.get("seat_type_code") or "--"
+            coach_name = ticket.get("coach_name") or ticket.get("coach_no") or "--"
+            seat_name = ticket.get("seat_name") or ticket.get("seat_no") or "--"
+
+            price_text = str(ticket.get("str_ticket_price_page") or "").strip()
+            if not price_text:
+                raw_price = ticket.get("ticket_price")
+                if isinstance(raw_price, int):
+                    price_text = f"{raw_price / 100:.1f}"
+                elif isinstance(raw_price, float):
+                    price_text = f"{raw_price:.1f}"
+                elif raw_price not in (None, ""):
+                    price_text = str(raw_price)
+            if price_text and not price_text.endswith("元"):
+                price_text = f"{price_text}元"
+            if not price_text:
+                price_text = "--"
+
             print(
-                f"  乘客: {passenger} | 席别: {ticket.get('seat_name')} | "
-                f"车厢座位: {ticket.get('coach_no')}/{ticket.get('seat_no')} | 状态: {ticket.get('ticket_status_name')}"
+                f"  乘客: {passenger} | 票种: {ticket_type} | 票价: {price_text} | "
+                f"席位: {seat_type}，{coach_name}车{seat_name} | 状态: {ticket.get('ticket_status_name') or '--'}"
             )
 
 
@@ -3105,12 +3142,12 @@ def write_qr_image_file(image_b64: str, *, preferred_path: Path | None = None) -
         target.write_bytes(image_bytes)
         return target
 
-    image_path = build_random_qr_image_path(use_tmp=False)
+    image_path = build_random_qr_image_path(use_tmp=True)
     try:
         image_path.parent.mkdir(parents=True, exist_ok=True)
         image_path.write_bytes(image_bytes)
     except OSError:
-        image_path = build_random_qr_image_path(use_tmp=True)
+        image_path = build_random_qr_image_path(use_tmp=False)
         image_path.parent.mkdir(parents=True, exist_ok=True)
         image_path.write_bytes(image_bytes)
     return image_path
@@ -3137,21 +3174,25 @@ def build_parser() -> argparse.ArgumentParser:
     login_p = sub.add_parser("login", help="登录")
     add_auth_args(login_p, require_username=True, allow_send_sms=True)
 
-    qr_create_p = sub.add_parser("qr-login-create", help="生成二维码登录图片（不轮询）")
+    qr_create_p = sub.add_parser("qr-login-create", help="生成二维码登录图片并自动后台检查（不阻塞）")
     qr_create_p.add_argument("--appid", default="otn", help="二维码登录 appid（默认 otn）")
-
-    sub.add_parser("qr-login-check", help="检查二维码登录状态（固定1秒轮询，持续等待）")
 
     order_p = sub.add_parser("orders", help="查询用户车票")
     order_p.add_argument("--where", default="G", choices=["G", "H"], help="G:未出行/近期, H:历史订单")
     order_p.add_argument("--start-date", help="查询起始日期, YYYY-MM-DD")
-    order_p.add_argument("--end-date", help="查询结束日期, YYYY-MM-DD")
+    order_p.add_argument("--end-date", help="查询结束日期, YYYY-MM-DD（--where H 时必须早于今天）")
     order_p.add_argument("--page-index", type=int, default=0)
     order_p.add_argument("--page-size", type=int, default=8)
-    order_p.add_argument("--query-type", type=int, default=1)
-    order_p.add_argument("--train-name", default="", help="按车次过滤（可选）")
+    order_p.add_argument(
+        "--query-type",
+        type=int,
+        default=1,
+        choices=[1, 2],
+        help="查询类型：1=按订票日期，2=按乘车日期",
+    )
+    order_p.add_argument("--train-name", default="", help="按订单号/车次/姓名过滤（可选）")
 
-    candidate_queue_p = sub.add_parser("candidate-queue", help="查询候补排队状态")
+    sub.add_parser("candidate-queue", help="查询候补排队状态")
 
     candidate_orders_p = sub.add_parser("candidate-orders", help="查询候补订单")
     candidate_orders_p.add_argument(
@@ -3276,7 +3317,109 @@ def ensure_logged_in(client: KyfwClient) -> None:
     )
 
 
+def run_qr_login_check_worker(client: KyfwClient, *, cookie_file: str, json_output: bool) -> int:
+    state_path = resolve_qr_state_path(cookie_file)
+    state = load_qr_login_state(state_path)
+    uuid = str(state.get("uuid") or "").strip()
+    if not uuid:
+        raise RuntimeError("状态文件中不存在 uuid。请先执行 qr-login-create。")
+    appid = str(state.get("appid") or "otn").strip() or "otn"
+
+    result: dict[str, Any]
+    last_qr_status = ""
+    while True:
+        result = client.check_qr_login(
+            uuid=uuid,
+            appid=appid,
+            finalize=True,
+        )
+        step = str(result.get("step") or "")
+        if step == "pending":
+            qr_status = str(result.get("qr_status") or "")
+            if not json_output and qr_status != last_qr_status:
+                if qr_status == "waiting_scan":
+                    print("轮询中: 未扫描")
+                elif qr_status == "waiting_confirm":
+                    print("轮询中: 已扫描，待 App 确认")
+                else:
+                    print("轮询中:", qr_status or "pending")
+            last_qr_status = qr_status
+            time.sleep(1.0)
+            continue
+        break
+
+    state["uuid"] = uuid
+    state["appid"] = appid
+    state["last_check"] = {
+        "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "step": result.get("step"),
+        "result_code": result.get("result_code"),
+        "result_message": result.get("result_message"),
+        "qr_status": result.get("qr_status"),
+    }
+    if result.get("step") == "logged_in":
+        state["completed_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    save_qr_login_state(state_path, state)
+
+    if json_output:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    step = result.get("step")
+    if step == "pending":
+        qr_status = result.get("qr_status")
+        if qr_status == "waiting_scan":
+            print("二维码状态: 未扫描")
+        elif qr_status == "waiting_confirm":
+            print("二维码状态: 已扫描，待 App 确认")
+        else:
+            print("二维码状态:", qr_status)
+        print("结果消息:", result.get("result_message") or "--")
+        return 2
+    if step == "expired":
+        print("二维码状态: 已失效，请重新执行 qr-login-create。")
+        return 2
+    if step == "logged_in":
+        print("登录成功。")
+        login_status = result.get("login_status") or {}
+        print("登录状态:", "已登录" if login_status.get("logged_in") else "未确认")
+        user = login_status.get("user") if isinstance(login_status, dict) else None
+        if isinstance(user, dict):
+            name = user.get("name")
+            username = user.get("username")
+            if name:
+                print("姓名:", name)
+            if username:
+                print("用户名:", username)
+        return 0
+
+    print("二维码状态:", result.get("qr_status") or "--")
+    print("结果消息:", result.get("result_message") or "--")
+    return 1
+
+
 def main() -> int:
+    if "--qr-check-worker" in sys.argv[1:]:
+        worker_parser = argparse.ArgumentParser(add_help=False)
+        worker_parser.add_argument("--base-url", default=BASE_URL)
+        worker_parser.add_argument("--timeout", type=int, default=15)
+        worker_parser.add_argument("--cookie-file", default=DEFAULT_COOKIE_FILE)
+        worker_parser.add_argument("--no-browser-headers", action="store_true")
+        worker_parser.add_argument("--json", action="store_true")
+        worker_parser.add_argument("--qr-check-worker", action="store_true")
+        worker_args = worker_parser.parse_args()
+        worker_client = KyfwClient(
+            base_url=worker_args.base_url,
+            timeout=worker_args.timeout,
+            cookie_file=worker_args.cookie_file,
+            browser_headers=not worker_args.no_browser_headers,
+        )
+        return run_qr_login_check_worker(
+            worker_client,
+            cookie_file=worker_args.cookie_file,
+            json_output=worker_args.json,
+        )
+
     parser = build_parser()
     args = parser.parse_args()
     client = KyfwClient(
@@ -3325,99 +3468,54 @@ def main() -> int:
             }
             save_qr_login_state(state_path, state)
 
+            uuid = str(result.get("uuid") or "").strip()
+            if not uuid:
+                raise RuntimeError("二维码创建成功但 uuid 为空，无法自动启动检查进程。")
+            checker_log = Path(tempfile.gettempdir()) / f"12306_qr_check_{uuid[:8]}.log"
+            cmd = [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--base-url",
+                str(args.base_url),
+                "--timeout",
+                str(args.timeout),
+                "--cookie-file",
+                str(args.cookie_file),
+            ]
+            if args.no_browser_headers:
+                cmd.append("--no-browser-headers")
+            cmd.append("--qr-check-worker")
+            with checker_log.open("ab") as log_fp:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_fp,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            checker_pid = proc.pid
+            checker_log_file = str(checker_log)
+
             if args.json:
                 out = {
                     "step": "qr_created",
                     "result_message": result.get("result_message"),
                     "qr_image_file": str(image_path),
-                    "next_action": "立即用类似 nohup 的后台方式执行: nohup python3 client.py qr-login-check > /dev/null 2>&1 &",
+                    "auto_check_started": True,
+                    "auto_check_pid": checker_pid,
+                    "auto_check_log_file": checker_log_file,
+                    "next_action": "已自动后台启动登录检查，请扫码确认后执行: python3 client.py status",
                     "confirm_login_action": "扫码确认后执行: python3 client.py status",
                 }
                 print(json.dumps(out, ensure_ascii=False, indent=2))
             else:
                 print("二维码已生成。")
                 print("二维码图片:", str(image_path))
-                print("立即用类似 nohup 的后台方式执行以下命令持续检查：")
-                print("  nohup python3 client.py qr-login-check > /dev/null 2>&1 &")
+                print(f"已自动后台启动检查进程（PID: {checker_pid}）。")
+                print("检查日志:", checker_log_file)
                 print("然后再让用户用 12306 App 扫码并确认。")
                 print("扫码确认后可执行以下命令确认是否登录成功：")
                 print("  python3 client.py status")
-            return 0
-
-        if args.command == "qr-login-check":
-            state_path = resolve_qr_state_path(args.cookie_file)
-            state = load_qr_login_state(state_path)
-            uuid = str(state.get("uuid") or "").strip()
-            if not uuid:
-                raise RuntimeError("状态文件中不存在 uuid。请先执行 qr-login-create。")
-            appid = str(state.get("appid") or "otn").strip() or "otn"
-
-            result: dict[str, Any]
-            last_qr_status = ""
-            while True:
-                result = client.check_qr_login(
-                    uuid=uuid,
-                    appid=appid,
-                    finalize=True,
-                )
-                step = str(result.get("step") or "")
-                if step == "pending":
-                    qr_status = str(result.get("qr_status") or "")
-                    if not args.json and qr_status != last_qr_status:
-                        if qr_status == "waiting_scan":
-                            print("轮询中: 未扫描")
-                        elif qr_status == "waiting_confirm":
-                            print("轮询中: 已扫描，待 App 确认")
-                        else:
-                            print("轮询中:", qr_status or "pending")
-                    last_qr_status = qr_status
-                    time.sleep(1.0)
-                    continue
-                break
-
-            state["uuid"] = uuid
-            state["appid"] = appid
-            state["last_check"] = {
-                "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-                "step": result.get("step"),
-                "result_code": result.get("result_code"),
-                "result_message": result.get("result_message"),
-                "qr_status": result.get("qr_status"),
-            }
-            if result.get("step") == "logged_in":
-                state["completed_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-            save_qr_login_state(state_path, state)
-
-            if args.json:
-                print(json.dumps(result, ensure_ascii=False, indent=2))
-            else:
-                step = result.get("step")
-                if step == "pending":
-                    qr_status = result.get("qr_status")
-                    if qr_status == "waiting_scan":
-                        print("二维码状态: 未扫描")
-                    elif qr_status == "waiting_confirm":
-                        print("二维码状态: 已扫描，待 App 确认")
-                    else:
-                        print("二维码状态:", qr_status)
-                    print("结果消息:", result.get("result_message") or "--")
-                elif step == "expired":
-                    print("二维码状态: 已失效，请重新执行 qr-login-create。")
-                elif step == "logged_in":
-                    print("登录成功。")
-                    login_status = result.get("login_status") or {}
-                    print("登录状态:", "已登录" if login_status.get("logged_in") else "未确认")
-                    user = login_status.get("user") if isinstance(login_status, dict) else None
-                    if isinstance(user, dict):
-                        name = user.get("name")
-                        username = user.get("username")
-                        if name:
-                            print("姓名:", name)
-                        if username:
-                            print("用户名:", username)
-                else:
-                    print("二维码状态:", result.get("qr_status") or "--")
-                    print("结果消息:", result.get("result_message") or "--")
             return 0
 
         if args.command == "status":
