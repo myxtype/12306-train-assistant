@@ -3792,6 +3792,11 @@ def build_parser() -> argparse.ArgumentParser:
     book_p.add_argument("--max-wait-seconds", type=int, default=30, help="排队轮询最长等待秒数")
     book_p.add_argument("--poll-interval", type=float, default=1.5, help="排队轮询间隔秒数")
     book_p.add_argument("--dry-run", action="store_true", help="只走到排队前检查，不执行最终提交")
+    book_p.add_argument(
+        "--channel",
+        choices=["alipay", "wechat", "unionpay"],
+        help="可选：按支付渠道解析跳转并本地生成支付二维码",
+    )
 
     passenger_p = sub.add_parser("passengers", help="查询当前账号乘车人信息")
     passenger_p.add_argument("--limit", type=int, default=200, help="最多展示多少个乘车人")
@@ -4398,6 +4403,42 @@ def main() -> int:
                 poll_interval=args.poll_interval,
                 dry_run=args.dry_run,
             )
+            channel_result: dict[str, Any] | None = None
+            pay_qr_url = ""
+            pay_qr_image_file = ""
+            pay_qr_error = ""
+            if not args.dry_run and args.channel:
+                payment = result.get("payment") if isinstance(result, dict) else None
+                if isinstance(payment, dict):
+                    gateway_post_url = str(payment.get("gateway_post_url") or "").strip()
+                    gateway_post_data = payment.get("gateway_post_data")
+                    if gateway_post_url and isinstance(gateway_post_data, dict):
+                        bank_id = client.candidate_pay_channel_to_bank_id(args.channel)
+                        channel_result = client.resolve_epay_channel_url(
+                            gateway_post_url=gateway_post_url,
+                            gateway_post_data={str(k): str(v) for k, v in gateway_post_data.items()},
+                            bank_id=bank_id,
+                            business_type="1",
+                        )
+                        raw_url = str(channel_result.get("channel_redirect_url_raw") or "").strip()
+                        final_url = str(channel_result.get("channel_redirect_url") or "").strip()
+                        pay_qr_url = raw_url or final_url
+                        if pay_qr_url:
+                            try:
+                                qr_path = write_payment_qr_image_file(pay_qr_url)
+                                pay_qr_image_file = str(qr_path)
+                            except Exception as qr_err:
+                                pay_qr_error = str(qr_err)
+                    else:
+                        pay_qr_error = "当前订单未返回完整支付网关参数，无法生成渠道二维码。"
+                else:
+                    pay_qr_error = "当前订单未返回支付参数，无法解析渠道支付链接。"
+            if isinstance(result, dict):
+                result["channel"] = args.channel or ""
+                result["channel_result"] = channel_result
+                result["pay_qr_url"] = pay_qr_url
+                result["pay_qr_image_file"] = pay_qr_image_file
+                result["pay_qr_error"] = pay_qr_error
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             else:
@@ -4420,6 +4461,16 @@ def main() -> int:
                             print("支付链接:", pay_url)
                         elif warning:
                             print(warning)
+                    if args.channel:
+                        print("支付渠道:", args.channel)
+                        if channel_result and channel_result.get("channel_redirect_url"):
+                            print("第三方支付链接(GET):", channel_result.get("channel_redirect_url"))
+                        if pay_qr_image_file:
+                            print("支付二维码链接:", pay_qr_url)
+                            print("支付二维码图片:", pay_qr_image_file)
+                            print("说明: 支付宝/微信风控场景建议直接扫码支付。")
+                        elif pay_qr_error:
+                            print("二维码生成失败:", pay_qr_error)
             return 0
 
         parser.print_help()

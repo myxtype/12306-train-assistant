@@ -300,11 +300,25 @@ python3 client.py book \
   --passengers 张三
 ```
 
+按渠道解析并生成本地支付二维码（普通订单）：
+
+```bash
+python3 client.py book \
+  --date 2026-03-23 \
+  --from 宁波 \
+  --to 宜春 \
+  --train-code G1234 \
+  --seat second_class \
+  --passengers 张三 \
+  --channel alipay
+```
+
 说明：
 
 - 当前链路可以稳定完成下单并拿到订单号。
 - 脚本会尝试调用 `payOrder/paycheckNew` 返回支付链接参数。
-- 实测支付环节可能无法在网页链路完成，建议在 12306 App 的“待支付订单”中完成支付。
+- 若传 `--channel`，脚本会尝试解析到渠道支付链接并本地生成二维码图片，方便扫码支付。
+- 若未传 `--channel` 或支付参数缺失，仍建议在 12306 App 的“待支付订单”中完成支付。
 
 多个乘客用逗号分隔：
 
