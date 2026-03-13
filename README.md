@@ -270,7 +270,8 @@ python3 client.py candidate-pay --channel alipay
 - `candidate-submit` 会继续执行候补确认与排队查询；若超时会返回“仍在排队中”，可继续用 `candidate-orders`/`candidate-queue` 查看。
 - `candidate-pay` 默认输出支付网关 POST 参数（`epay.12306.cn/pay/payGateway`）。
 - 若用户侧仅支持浏览器 GET 打开链接，使用 `candidate-pay --channel alipay|wechat|unionpay` 可直接返回第三方支付链接。
-- `candidate-pay --channel` 会额外生成支付二维码图片（优先写入系统 `tmp` 目录，失败时回退到项目目录），便于用户扫码支付。
+- `candidate-pay --channel` 会额外本地生成支付二维码图片（不调用在线二维码服务，优先写入系统 `tmp` 目录，失败时回退到项目目录），便于用户扫码支付。
+- 本地生成二维码依赖 `qrcode` 或 `segno`（示例：`pip install qrcode[pil]`）。
 
 ### 9) 订票
 

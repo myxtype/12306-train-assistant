@@ -289,7 +289,7 @@ python3 client.py candidate-pay --reserve-no <候补单号>
 | `--reserve-no` | 否 | 自动读取 | 候补单号；不传则尝试从 `candidate-queue` 自动读取 |
 | `--channel` | 否 | 空 | 支付渠道：`alipay` / `wechat` / `unionpay`，传入后返回可直接浏览器 GET 打开的第三方支付链接 |
 
-说明：传 `--channel` 时会自动尝试生成支付二维码图片，优先写到系统临时目录，便于用户直接扫码支付。
+说明：传 `--channel` 时会自动尝试本地生成支付二维码图片，便于用户直接扫码支付。若缺依赖可安装 `qrcode` 或 `segno`。
 
 ### `book` 订票
 

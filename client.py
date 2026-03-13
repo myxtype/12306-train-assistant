@@ -3584,40 +3584,55 @@ def write_qr_image_file(image_b64: str, *, preferred_path: Path | None = None) -
 def write_payment_qr_image_file(
     payment_url: str,
     *,
-    timeout: int = 15,
     preferred_path: Path | None = None,
 ) -> Path:
     url = str(payment_url or "").strip()
     if not url:
         raise ValueError("支付链接为空，无法生成二维码。")
 
-    qr_api = "https://api.qrserver.com/v1/create-qr-code/"
-    resp = requests.get(
-        qr_api,
-        params={"size": "420x420", "data": url},
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    image_bytes = resp.content
-    if not image_bytes:
-        raise RuntimeError("二维码服务返回空内容。")
-
     if preferred_path is not None:
         target = preferred_path.expanduser()
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(image_bytes)
-        return target
+        output_path = target
+    else:
+        name = f"12306_pay_qr_{uuidlib.uuid4().hex[:12]}.png"
+        output_path = Path(tempfile.gettempdir()) / name
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            output_path = Path(__file__).resolve().parent / name
+            output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    name = f"12306_pay_qr_{uuidlib.uuid4().hex[:12]}.png"
-    image_path = Path(tempfile.gettempdir()) / name
+    # Local QR generation only: do not call any remote QR API.
     try:
-        image_path.parent.mkdir(parents=True, exist_ok=True)
-        image_path.write_bytes(image_bytes)
-    except OSError:
-        image_path = Path(__file__).resolve().parent / name
-        image_path.parent.mkdir(parents=True, exist_ok=True)
-        image_path.write_bytes(image_bytes)
-    return image_path
+        import qrcode  # type: ignore
+
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=10,
+            border=2,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        img.save(output_path)
+        return output_path
+    except Exception:
+        pass
+
+    try:
+        import segno  # type: ignore
+
+        qr = segno.make(url, error="m")
+        qr.save(str(output_path), scale=10, border=2)
+        return output_path
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        "本地二维码依赖缺失：请安装 qrcode 或 segno，例如执行 `pip install qrcode[pil]`。"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -4194,7 +4209,7 @@ def main() -> int:
                     pay_qr_url = raw_url or final_url
                     if pay_qr_url:
                         try:
-                            qr_path = write_payment_qr_image_file(pay_qr_url, timeout=client.timeout)
+                            qr_path = write_payment_qr_image_file(pay_qr_url)
                             pay_qr_image_file = str(qr_path)
                         except Exception as qr_err:
                             pay_qr_error = str(qr_err)
