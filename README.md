@@ -300,6 +300,19 @@ python3 client.py book \
   --passengers 张三
 ```
 
+按支付渠道生成本地支付二维码（中转订单）：
+
+```bash
+python3 client.py transfer-book \
+  --date 2026-03-23 \
+  --from 南部 \
+  --to 广安 \
+  --plan-index 1 \
+  --seat second_class \
+  --passengers 张三 \
+  --pay-channel alipay
+```
+
 按渠道解析并生成本地支付二维码（普通订单）：
 
 ```bash
@@ -364,6 +377,8 @@ python3 client.py transfer-book \
 - `--plan-index` 对应 `transfer-ticket` 文本结果中的方案序号（从 1 开始）。
 - 中转下单链路基于 `lcQuery/lcConfirmPassenger`，按两程统一席别提交。
 - 当前实现会轮询 `queryOrderWaitTime(tourFlag=lc)` 直到拿到订单号或返回失败信息。
+- `--channel` 是中转查询渠道参数（默认 `E`），`--pay-channel` 才是支付渠道（`alipay/wechat/unionpay`）。
+- 传 `--pay-channel` 时会尝试解析渠道支付链接并本地生成支付二维码。
 
 ## 全局参数
 

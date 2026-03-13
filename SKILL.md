@@ -38,7 +38,7 @@ icon: 🚄
 3. 站名支持中文/拼音/三字码，直接传给命令即可。
 4. `route` 优先用 `--train-code`，减少用户提供 `train_no` 的负担。
 5. 失败时先给出可执行修复建议（缺参数、日期格式、站名不匹配、风控限制等）。
-6. `book` 成功后优先告知订单号与支付链接；若网页支付不可用，明确建议去 12306 App 的“待支付订单”继续支付。
+6. `book` 成功后优先告知订单号；若传了 `--channel`，同时给出支付二维码路径与支付链接；若网页支付不可用，建议去 12306 App 的“待支付订单”继续支付。
 7. `qr-login-create` 会自动后台启动登录检查；扫码确认后统一用 `status` 判断是否已登录。
 
 ## 常用示例
@@ -109,6 +109,9 @@ python3 client.py book --date 2026-03-23 --from 北京南 --to 上海虹桥 --tr
 
 # 单人选座（D 会自动归一化为 1D）
 python3 client.py book --date 2026-03-23 --from 北京南 --to 上海虹桥 --train-code G101 --seat second_class --passengers 张三 --choose-seats D
+
+# 支付渠道 + 本地支付二维码
+python3 client.py book --date 2026-03-23 --from 北京南 --to 上海虹桥 --train-code G101 --seat second_class --passengers 张三 --channel alipay
 ```
 
 ### 示例 7：候补查询
@@ -188,11 +191,11 @@ python3 client.py candidate-pay --reserve-no <候补单号>
 | `--passengers` | 是 | 无 | 乘客姓名，多个用逗号分隔 |
 | `--purpose` | 否 | `00` | 中转乘客类型编码 |
 | `--channel` | 否 | `E` | 中转接口渠道参数 |
+| `--pay-channel` | 否 | 空 | 支付渠道：`alipay` / `wechat` / `unionpay`；传入后解析渠道链接并本地生成支付二维码 |
 | `--endpoint` | 否 | `queryG` | 中转接口类型（`queryG/queryZ`） |
 | `--max-wait-seconds` | 否 | `30` | 排队轮询最长等待秒数 |
 | `--poll-interval` | 否 | `1.5` | 排队轮询间隔（秒） |
 | `--dry-run` | 否 | 关闭 | 只检查不提交最终确认 |
-| `--channel` | 否 | 空 | 支付渠道：`alipay` / `wechat` / `unionpay`；传入后解析渠道链接并本地生成支付二维码 |
 
 ### `route` 经停站查询
 
@@ -308,6 +311,7 @@ python3 client.py candidate-pay --reserve-no <候补单号>
 | `--max-wait-seconds` | 否 | `30` | 排队轮询最长等待秒数 |
 | `--poll-interval` | 否 | `1.5` | 排队轮询间隔（秒） |
 | `--dry-run` | 否 | 关闭 | 只检查不提交最终确认 |
+| `--channel` | 否 | 空 | 支付渠道：`alipay` / `wechat` / `unionpay`；传入后解析渠道链接并本地生成支付二维码 |
 
 ## 参数提取规则
 
@@ -323,7 +327,7 @@ python3 client.py candidate-pay --reserve-no <候补单号>
 - 默认输出文本结果并概括关键信息。
 - 若用户说“返回 JSON / 机器可读”，添加 `--json` 并返回结构化摘要。
 - `book` 成功时应突出 `order_id`；若传了 `--channel`，应优先展示二维码路径。
-- `transfer-book` 成功时应突出 `order_id` 与方案序号（`plan_index`）。
+- `transfer-book` 成功时应突出 `order_id` 与方案序号（`plan_index`）；若传了 `--pay-channel`，应优先展示二维码路径。
 
 ## 示例工作流
 
@@ -359,6 +363,9 @@ python3 client.py transfer-ticket --date <日期> --from 深圳 --to 拉萨 --li
 
 ```bash
 python3 client.py transfer-book --date <日期> --from <出发站> --to <到达站> --plan-index 1 --seat second_class --passengers 张三
+
+# 需要支付二维码时
+python3 client.py transfer-book --date <日期> --from <出发站> --to <到达站> --plan-index 1 --seat second_class --passengers 张三 --pay-channel alipay
 ```
 
 ### 示例 D：候补
