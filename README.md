@@ -11,13 +11,14 @@
 - 提交中转订单（按中转方案下单）
 - 查询经停站
 - 查询订单
+- 查询未完成订单（默认返回 1 条待支付）
 - 查询候补排队状态
 - 查询候补订单（进行中/已处理）
 - 提交候补订单（基于“无票可候补”规则）
 - 取消候补订单（按候补单号）
-- 候补支付参数获取（输出支付网关 POST 参数）
+- 候补支付参数获取（第三方支付链接/二维码）
 - 订票（提交订单并轮询订单号）
-- 支付信息获取（尝试生成支付链接）
+- 支付信息获取（第三方支付链接/二维码）
 
 脚本文件：`client.py`
 
@@ -42,6 +43,7 @@ python3 client.py book -h
 python3 client.py transfer-ticket -h
 python3 client.py transfer-book -h
 python3 client.py order-pay -h
+python3 client.py order-no-complete -h
 python3 client.py route -h
 python3 client.py candidate-orders -h
 python3 client.py candidate-submit -h
@@ -194,6 +196,17 @@ python3 client.py orders --where G
 
 若 cookie 未登录或失效，请先执行 `login`（或二维码登录）更新 cookie 后再查询。
 
+### 7.1) 查询 1 条未完成订单（默认待支付）
+
+```bash
+python3 client.py order-no-complete
+python3 client.py order-no-complete --json
+```
+
+可选参数：
+
+- `--any`（返回第一条未完成订单，不强制 `pay_flag=Y`）
+
 ### 8) 候补相关（查询 / 提交 / 取消）
 
 候补排队状态：
@@ -269,8 +282,8 @@ python3 client.py candidate-pay --pay-channel alipay
 - 候补命令需要登录态（可沿用已有 cookie）。
 - 若 cookie 失效，请先执行 `login`（或二维码登录）更新 cookie 后再重试。
 - `candidate-submit` 会继续执行候补确认与排队查询；若超时会返回“仍在排队中”，可继续用 `candidate-orders`/`candidate-queue` 查看。
-- `candidate-pay` 默认输出支付网关 POST 参数（`epay.12306.cn/pay/payGateway`）。
-- 若用户侧仅支持浏览器 GET 打开链接，使用 `candidate-pay --pay-channel alipay|wechat|unionpay` 可直接返回第三方支付链接。
+- `candidate-pay` 默认不返回支付网关/curl，仅返回第三方支付链接与二维码信息。
+- 使用 `candidate-pay --pay-channel alipay|wechat|unionpay` 可直接返回第三方支付链接。
 - `candidate-pay --pay-channel` 会额外本地生成支付二维码图片（不调用在线二维码服务，优先写入系统 `tmp` 目录，失败时回退到项目目录），便于用户扫码支付。
 - 本地生成二维码依赖 `qrcode` 或 `segno`（示例：`pip install qrcode[pil]`）。
 
@@ -283,8 +296,9 @@ python3 client.py order-pay --pay-channel alipay
 
 说明：
 
-- `order-pay` 同时适用于普通订单和中转订单，底层都是同一套普通订单支付链路（`payOrder/init + payOrder/paycheckNew`）。
+- `order-pay` 同时适用于普通订单和中转订单，链路为：`queryMyOrderNoComplete -> continuePayNoCompleteMyOrder -> payOrder/paycheckNew`。
 - 传 `--pay-channel` 后可解析渠道跳转链接并本地生成支付二维码。
+- `order-pay` 不返回支付网关/curl，仅返回第三方支付链接与二维码信息。
 
 ### 9) 订票
 
@@ -386,7 +400,7 @@ python3 client.py transfer-book \
 7. `confirmSingleForQueue`
 8. 轮询 `queryOrderWaitTime` 获取订单号
 9. `resultOrderForDcQueue`
-10. `payOrder/init` + `payOrder/paycheckNew`（尝试生成支付链接）
+10. 返回订单号（支付步骤需单独执行 `order-pay`）
 
 ## 注意事项
 

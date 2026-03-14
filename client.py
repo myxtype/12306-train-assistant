@@ -29,8 +29,8 @@ DEFAULT_STATION_CACHE_FILE = str(DEFAULT_CACHE_DIR / "kyfw_12306_station_index.j
 STATION_CACHE_TTL_SECONDS = 3 * 24 * 60 * 60
 SM4_KEY = "tiekeyuankp12306"
 USER_AGENT = (
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_3 like Mac OS X) "
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Mobile/15E148 Safari/604.1"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.3.1 Safari/605.1.15"
 )
 BROWSER_ACCEPT_LANGUAGE = "zh-CN,zh-Hans;q=0.9"
 SEAT_CODE_MAP: dict[str, str] = {
@@ -3435,6 +3435,20 @@ def print_orders(resp: dict[str, Any]) -> None:
             )
 
 
+def pick_first_no_complete_order(resp: dict[str, Any], *, payable_only: bool = True) -> dict[str, Any] | None:
+    data = resp.get("data") if isinstance(resp, dict) else None
+    rows = data.get("orderDBList") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return None
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        if payable_only and str(item.get("pay_flag") or "").strip().upper() != "Y":
+            continue
+        return item
+    return None
+
+
 def print_candidate_queue(queue: dict[str, Any]) -> None:
     flag = queue.get("flag")
     status = queue.get("status")
@@ -3829,6 +3843,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     order_p.add_argument("--train-name", default="", help="按订单号/车次/姓名过滤（可选）")
 
+    order_no_complete_p = sub.add_parser("order-no-complete", help="查询1条未完成订单（默认待支付）")
+    order_no_complete_p.add_argument(
+        "--any",
+        action="store_true",
+        help="返回第一条未完成订单（不过滤 pay_flag）",
+    )
+
     sub.add_parser("candidate-queue", help="查询候补排队状态")
 
     candidate_orders_p = sub.add_parser("candidate-orders", help="查询候补订单")
@@ -4210,6 +4231,39 @@ def main() -> int:
                     raise RuntimeError(f"接口返回异常: {result}")
                 print("来源接口:", result.get("source"))
                 print_passengers(rows, args.limit)
+            return 0
+
+        if args.command == "order-no-complete":
+            ensure_logged_in(client)
+            no_complete = client.query_my_order_no_complete()
+            order = pick_first_no_complete_order(no_complete, payable_only=not bool(args.any))
+            out = {
+                "query_status": no_complete.get("status"),
+                "query_httpstatus": no_complete.get("httpstatus"),
+                "payable_only": not bool(args.any),
+                "order": order,
+            }
+            if args.json:
+                print(json.dumps(out, ensure_ascii=False, indent=2))
+            else:
+                print("未完成订单接口状态:", no_complete.get("status"), no_complete.get("httpstatus"))
+                if not isinstance(order, dict):
+                    print("未找到符合条件的未完成订单。")
+                else:
+                    from_name = order.get("from_station_name_page") or "--"
+                    to_name = order.get("to_station_name_page") or "--"
+                    if isinstance(from_name, list):
+                        from_name = ",".join([str(x) for x in from_name if x not in (None, "")]) or "--"
+                    if isinstance(to_name, list):
+                        to_name = ",".join([str(x) for x in to_name if x not in (None, "")]) or "--"
+                    print("订单号:", order.get("sequence_no") or "--")
+                    print("下单日期:", order.get("order_date") or "--")
+                    print("车次:", order.get("train_code_page") or "--")
+                    print("行程:", f"{from_name} -> {to_name}")
+                    print("出发时间:", order.get("start_train_date_page") or "--")
+                    print("到达时间:", order.get("arrive_time_page") or "--")
+                    print("支付标记:", order.get("pay_flag") or "--")
+                    print("人数:", order.get("ticket_totalnum") or "--")
             return 0
 
         if args.command == "orders":

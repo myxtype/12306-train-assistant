@@ -1,7 +1,6 @@
 ---
 name: 12306-train-assistant
 description: 12306 查询与订票辅助技能，支持余票查询、经停站查询、中转换乘、候补查询与提交/取消、登录状态检查、密码登录与二维码登录、下单与支付链接获取；当用户提到火车票、高铁票、经停站、中转、候补或 12306 查票时触发。
-version: 0.1.5
 icon: 🚄
 ---
 
@@ -19,7 +18,7 @@ icon: 🚄
 - 二维码登录：`qr-login-create`
 - 候补管理：`candidate-queue` / `candidate-orders` / `candidate-submit` / `candidate-cancel` / `candidate-pay`
 - 支付信息：`order-pay`
-- 需要登录的操作：`passengers` / `orders` / `book` / `transfer-book` / `order-pay` / `candidate-submit` / `candidate-cancel` / `candidate-pay`
+- 需要登录的操作：`passengers` / `orders` / `order-no-complete` / `book` / `transfer-book` / `order-pay` / `candidate-submit` / `candidate-cancel` / `candidate-pay`
 
 ## 触发信号
 
@@ -97,6 +96,8 @@ python3 client.py status
 python3 client.py passengers --limit 50
 python3 client.py orders --where G --page-size 20
 python3 client.py orders --where H --start-date 2026-02-01 --end-date 2026-03-01
+python3 client.py order-no-complete
+python3 client.py order-no-complete --any --json
 ```
 
 ### 示例 6：订票（预检与提交）
@@ -247,6 +248,12 @@ python3 client.py candidate-pay --reserve-no <候补单号>
 | `--page-size` | 否 | `8` | 每页条数 |
 | `--query-type` | 否 | `1` | 查询类型：`1` 按订票日期，`2` 按乘车日期 |
 | `--train-name` | 否 | 空 | 按订单号/车次/姓名筛选（对应接口字段 `sequeue_train_name`） |
+
+### `order-no-complete` 查询 1 条未完成订单
+
+| 参数 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `--any` | 否 | 关闭 | 默认仅返回可支付订单（`pay_flag=Y`）；开启后返回第一条未完成订单 |
 
 ### `candidate-queue` 候补排队状态
 
