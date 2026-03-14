@@ -29,8 +29,8 @@ DEFAULT_STATION_CACHE_FILE = str(DEFAULT_CACHE_DIR / "kyfw_12306_station_index.j
 STATION_CACHE_TTL_SECONDS = 3 * 24 * 60 * 60
 SM4_KEY = "tiekeyuankp12306"
 USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.3.1 Safari/605.1.15"
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_3 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Mobile/15E148 Safari/604.1"
 )
 BROWSER_ACCEPT_LANGUAGE = "zh-CN,zh-Hans;q=0.9"
 SEAT_CODE_MAP: dict[str, str] = {
@@ -1077,6 +1077,18 @@ class KyfwClient:
             referer="/otn/view/train_order.html",
         )
 
+    def continue_pay_common_order(self, *, sequence_no: str, arrive_time_str: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/otn/queryOrder/continuePayNoCompleteMyOrder",
+            data={
+                "sequence_no": sequence_no,
+                "pay_flag": "pay",
+                "arrive_time_str": arrive_time_str,
+            },
+            referer="/otn/view/train_order.html",
+        )
+
     def query_my_order(
         self,
         *,
@@ -1748,35 +1760,17 @@ class KyfwClient:
                 return urljoin(str(resp.url), meta_refresh.group(1).strip())
             return None
 
-        def _resolve_redirect_chain(start_url: str, *, max_hops: int = 4) -> tuple[str, list[dict[str, Any]]]:
-            chain: list[dict[str, Any]] = []
-            current_url = start_url
-            for _ in range(max_hops):
-                hop_resp = sess.get(
-                    current_url,
-                    timeout=self.timeout,
-                    allow_redirects=False,
-                )
-                chain.append({"url": current_url, "status": hop_resp.status_code})
-                location = str(hop_resp.headers.get("Location") or "").strip()
-                if 300 <= hop_resp.status_code < 400 and location:
-                    current_url = urljoin(str(hop_resp.url), location)
-                    continue
-                break
-            return current_url, chain
-
         current_resp = channel_resp
         for _ in range(3):
             parsed_steps.append({"url": current_resp.url, "status": current_resp.status_code})
             redirect_url = _extract_redirect_url(current_resp)
             if redirect_url:
-                final_redirect_url, redirect_chain = _resolve_redirect_chain(redirect_url)
                 return {
                     "channel_submit_url": submit_url,
                     "channel_submit_status": channel_resp.status_code,
                     "channel_redirect_url_raw": redirect_url,
-                    "channel_redirect_url": final_redirect_url,
-                    "channel_redirect_chain": redirect_chain,
+                    "channel_redirect_url": redirect_url,
+                    "channel_redirect_chain": [],
                     "resolve_steps": parsed_steps,
                 }
 
@@ -1788,13 +1782,12 @@ class KyfwClient:
             if next_method == "get":
                 query = urlencode(next_data)
                 final_url = next_url if not query else f"{next_url}?{query}"
-                final_redirect_url, redirect_chain = _resolve_redirect_chain(final_url)
                 return {
                     "channel_submit_url": submit_url,
                     "channel_submit_status": channel_resp.status_code,
                     "channel_redirect_url_raw": final_url,
-                    "channel_redirect_url": final_redirect_url,
-                    "channel_redirect_chain": redirect_chain,
+                    "channel_redirect_url": final_url,
+                    "channel_redirect_chain": [],
                     "resolve_steps": parsed_steps,
                 }
             current_resp = sess.post(
@@ -2749,7 +2742,10 @@ class KyfwClient:
         )
         return random_value
 
-    def pay_check_new(self, *, init_random: str) -> dict[str, Any]:
+    def pay_check_new(self, *, init_random: str = "") -> dict[str, Any]:
+        referer = "/otn/payOrder/init"
+        if init_random:
+            referer = f"/otn/payOrder/init?random={init_random}"
         return self._request(
             "POST",
             "/otn/payOrder/paycheckNew",
@@ -2775,7 +2771,7 @@ class KyfwClient:
                 "inschild": "",
                 "_json_att": "",
             },
-            referer=f"/otn/payOrder/init?random={init_random}",
+            referer=referer,
         )
 
     @staticmethod
@@ -3641,6 +3637,8 @@ def write_payment_qr_image_file(
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Local QR generation only: do not call any remote QR API.
+    qr_errors: list[str] = []
+
     try:
         import qrcode  # type: ignore
 
@@ -3655,8 +3653,8 @@ def write_payment_qr_image_file(
         img = qr.make_image(fill_color="black", back_color="white")
         img.save(output_path)
         return output_path
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        qr_errors.append(f"qrcode: {exc}")
 
     try:
         import segno  # type: ignore
@@ -3664,12 +3662,72 @@ def write_payment_qr_image_file(
         qr = segno.make(url, error="m")
         qr.save(str(output_path), scale=10, border=2)
         return output_path
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        qr_errors.append(f"segno: {exc}")
+
+    py_exec = shell_quote(sys.executable)
+    details = "; ".join(qr_errors) if qr_errors else "未知错误"
 
     raise RuntimeError(
-        "本地二维码依赖缺失：请安装 qrcode 或 segno，例如执行 `pip install qrcode[pil]`。"
+        "本地二维码依赖缺失：请在当前解释器安装依赖。"
+        f" 当前解释器: {sys.executable}。"
+        f" 可执行: `{py_exec} -m pip install qrcode[pil]` 或 `{py_exec} -m pip install segno`。"
+        f" 详细错误: {details}"
     )
+
+
+def build_arrive_time_str_from_order(order: dict[str, Any]) -> str:
+    parts: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    tickets = order.get("tickets") if isinstance(order, dict) else None
+    if isinstance(tickets, list):
+        for ticket in tickets:
+            if not isinstance(ticket, dict):
+                continue
+            station_train = ticket.get("stationTrainDTO")
+            if not isinstance(station_train, dict):
+                continue
+            train_code = str(station_train.get("station_train_code") or "").strip()
+            arrive_time = str(station_train.get("arrive_time") or "").strip()
+            if not (train_code and arrive_time):
+                continue
+            key = (train_code, arrive_time)
+            if key in seen:
+                continue
+            seen.add(key)
+            parts.append(f"{train_code},{arrive_time};")
+    if parts:
+        return "".join(parts)
+
+    train_code_page = str(order.get("train_code_page") or "").strip()
+    arrive_time_page = str(order.get("arrive_time_page") or "").strip()
+    if train_code_page and arrive_time_page:
+        return f"{train_code_page},{arrive_time_page};"
+    raise RuntimeError(f"未完成订单缺少到达时刻信息，无法继续支付: {order}")
+
+
+def select_order_for_common_payment(no_complete_resp: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    data = no_complete_resp.get("data") if isinstance(no_complete_resp, dict) else None
+    order_list = data.get("orderDBList") if isinstance(data, dict) else None
+    if not isinstance(order_list, list) or not order_list:
+        raise RuntimeError(f"未找到待支付普通/中转订单: {no_complete_resp}")
+
+    for item in order_list:
+        if not isinstance(item, dict):
+            continue
+        sequence_no = str(item.get("sequence_no") or "").strip()
+        pay_flag = str(item.get("pay_flag") or "").strip().upper()
+        if not sequence_no or pay_flag != "Y":
+            continue
+        arrive_time_str = build_arrive_time_str_from_order(item)
+        payload = {
+            "sequence_no": sequence_no,
+            "pay_flag": "pay",
+            "arrive_time_str": arrive_time_str,
+        }
+        return item, payload
+
+    raise RuntimeError(f"当前未完成订单里没有可支付的普通/中转订单: {no_complete_resp}")
 
 
 def fetch_common_order_payment(
@@ -3678,14 +3736,19 @@ def fetch_common_order_payment(
     pay_channel: str = "",
 ) -> dict[str, Any]:
     no_complete = client.query_my_order_no_complete()
-    init_random = client.init_pay_order()
-    pay_check_new_resp = client.pay_check_new(init_random=init_random)
+    selected_order, continue_payload = select_order_for_common_payment(no_complete)
+    continue_pay_resp = client.continue_pay_common_order(
+        sequence_no=continue_payload["sequence_no"],
+        arrive_time_str=continue_payload["arrive_time_str"],
+    )
+    if continue_pay_resp:
+        client._assert_request_ok(continue_pay_resp, context="continuePayNoCompleteMyOrder")
+    pay_check_new_resp = client.pay_check_new()
     client._assert_request_ok(pay_check_new_resp, context="paycheckNew")
     pay_data = pay_check_new_resp.get("data") if isinstance(pay_check_new_resp, dict) else None
     if isinstance(pay_data, dict) and pay_data.get("flag") is False:
         raise RuntimeError(f"普通订单支付参数获取失败(flag=false): {pay_check_new_resp}")
     payment = client._build_payment_result(pay_check_new_resp)
-    payment["init_random"] = init_random
 
     channel_result: dict[str, Any] | None = None
     pay_qr_url = ""
@@ -3715,6 +3778,9 @@ def fetch_common_order_payment(
 
     return {
         "no_complete": no_complete,
+        "selected_order": selected_order,
+        "continue_payload": continue_payload,
+        "continuePayNoCompleteMyOrder": continue_pay_resp,
         "payment": payment,
         "pay_channel": pay_channel,
         "channel_result": channel_result,
@@ -4274,7 +4340,7 @@ def main() -> int:
             if not reserve_no:
                 raise RuntimeError("未找到可支付的候补单号，请传入 --reserve-no 或先执行 candidate-queue。")
 
-            continue_pay_resp_text = client.continue_pay_candidate_order(reserve_no=reserve_no)
+            client.continue_pay_candidate_order(reserve_no=reserve_no)
             init_pay_resp = client.init_candidate_pay_order()
             client._assert_request_ok(init_pay_resp, context="afterNatePay payOrderInit")
             pay_check_resp = client.candidate_pay_check()
@@ -4311,12 +4377,12 @@ def main() -> int:
                             pay_qr_error = str(qr_err)
             out = {
                 "reserve_no": reserve_no,
-                "candidate_queue": queue_resp,
-                "continuePayNoCompleteMyOrder": continue_pay_resp_text,
-                "payOrderInit": init_pay_resp,
-                "payment": payment,
                 "pay_channel": args.pay_channel or "",
-                "channel_result": channel_result,
+                "third_party_pay_url": (
+                    str(channel_result.get("channel_redirect_url_raw") or channel_result.get("channel_redirect_url") or "")
+                    if isinstance(channel_result, dict)
+                    else ""
+                ),
                 "pay_qr_url": pay_qr_url,
                 "pay_qr_image_file": pay_qr_image_file,
                 "pay_qr_error": pay_qr_error,
@@ -4325,43 +4391,49 @@ def main() -> int:
                 print(json.dumps(out, ensure_ascii=False, indent=2))
             else:
                 print("候补单号:", reserve_no)
-                print("支付网关:", payment.get("gateway_post_url"))
-                print("支付请求(curl, POST):")
-                print(payment.get("gateway_curl"))
                 if channel_result:
+                    third_party_pay_url = str(
+                        channel_result.get("channel_redirect_url_raw") or channel_result.get("channel_redirect_url") or ""
+                    )
                     print("支付渠道:", args.pay_channel)
-                    print("第三方支付链接(GET):", channel_result.get("channel_redirect_url"))
+                    print("第三方支付链接(GET):", third_party_pay_url)
                     if pay_qr_image_file:
-                        print("支付二维码链接:", pay_qr_url)
-                        print("支付二维码图片:", pay_qr_image_file)
-                        print("说明: 优先使用中间支付链接生成二维码，建议用户用支付宝/微信扫码支付。")
+                        if str(pay_qr_url or "").strip() and str(pay_qr_url).strip() != third_party_pay_url:
+                            print("支付二维码链接:", pay_qr_url)
+                        print("支付二维码图片路径:", pay_qr_image_file)
                     elif pay_qr_error:
                         print("二维码生成失败:", pay_qr_error)
-                        print("可手动打开上面的支付链接。")
                 else:
-                    print("说明: 候补支付网关为 POST 表单，打开后可在页面选择支付宝/微信。")
                     print("如需直接生成可浏览器打开的 GET 支付链接，请加 --pay-channel alipay|wechat|unionpay。")
             return 0
 
         if args.command == "order-pay":
             ensure_logged_in(client)
             result = fetch_common_order_payment(client, pay_channel=str(args.pay_channel or "").strip())
+            channel_result = result.get("channel_result") if isinstance(result, dict) else None
+            third_party_pay_url = (
+                str(channel_result.get("channel_redirect_url_raw") or channel_result.get("channel_redirect_url") or "")
+                if isinstance(channel_result, dict)
+                else ""
+            )
+            out = {
+                "pay_channel": result.get("pay_channel") if isinstance(result, dict) else "",
+                "third_party_pay_url": third_party_pay_url,
+                "pay_qr_url": result.get("pay_qr_url") if isinstance(result, dict) else "",
+                "pay_qr_image_file": result.get("pay_qr_image_file") if isinstance(result, dict) else "",
+                "pay_qr_error": result.get("pay_qr_error") if isinstance(result, dict) else "",
+            }
             if args.json:
-                print(json.dumps(result, ensure_ascii=False, indent=2))
+                print(json.dumps(out, ensure_ascii=False, indent=2))
             else:
-                print("未完成订单接口状态:", result.get("no_complete", {}).get("status"))
-                payment = result.get("payment") if isinstance(result, dict) else None
-                if isinstance(payment, dict):
-                    print("支付网关:", payment.get("gateway_post_url"))
-                    print("支付请求(curl, POST):")
-                    print(payment.get("gateway_curl"))
-                channel_result = result.get("channel_result") if isinstance(result, dict) else None
                 if isinstance(channel_result, dict):
                     print("支付渠道:", result.get("pay_channel"))
-                    print("第三方支付链接(GET):", channel_result.get("channel_redirect_url"))
+                    print("第三方支付链接(GET):", third_party_pay_url)
                     if result.get("pay_qr_image_file"):
-                        print("支付二维码链接:", result.get("pay_qr_url"))
-                        print("支付二维码图片:", result.get("pay_qr_image_file"))
+                        qr_url = str(result.get("pay_qr_url") or "").strip()
+                        if qr_url and qr_url != third_party_pay_url:
+                            print("支付二维码链接:", qr_url)
+                        print("支付二维码图片路径:", result.get("pay_qr_image_file"))
                 elif result.get("pay_channel"):
                     print("提示: 未解析到渠道链接。")
                 else:
